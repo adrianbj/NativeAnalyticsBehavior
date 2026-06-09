@@ -136,6 +136,61 @@
     }
   }
 
+  function stripScripts(n) {
+    if (!n || !n.childNodes || !n.childNodes.length) return;
+    n.childNodes = n.childNodes.filter(function (c) {
+      return !(c && c.type === 2 && c.tagName === "script");
+    });
+    for (var i = 0; i < n.childNodes.length; i++) stripScripts(n.childNodes[i]);
+  }
+
+  function uploadSnapshot(node) {
+    var envelope = JSON.stringify({
+      dom: node,
+      path: cfg.snapshotPath || path,
+      device: deviceClass(),
+      capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+      pageModified: cfg.pageModified || ""
+    });
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(cfg.snapshotEndpoint, new Blob([envelope], { type: "application/json" }));
+        return;
+      }
+    } catch (e) {}
+    try {
+      fetch(cfg.snapshotEndpoint, { method: "POST", body: envelope, keepalive: true, headers: { "Content-Type": "application/json" } });
+    } catch (e) {}
+  }
+
+  function doCapture() {
+    if (!window.rrwebSnapshot || !window.rrwebSnapshot.snapshot) return;
+    var node;
+    try {
+      node = window.rrwebSnapshot.snapshot(document, {
+        blockSelector: "[data-na-block]",
+        maskAllInputs: true,
+        maskTextSelector: "[data-na-mask]",
+        inlineStylesheet: true,
+        recordCanvas: false
+      });
+    } catch (e) { return; }
+    if (!node) return;
+    stripScripts(node);
+    uploadSnapshot(node);
+  }
+
+  function maybeCaptureSnapshot() {
+    if (!cfg.snapshotEndpoint || !cfg.snapshotFresh) return;
+    if (cfg.snapshotFresh[deviceClass()] === true) return;
+    if (window.rrwebSnapshot && window.rrwebSnapshot.snapshot) { doCapture(); return; }
+    if (!cfg.snapshotLib) return;
+    var s = document.createElement("script");
+    s.src = cfg.snapshotLib;
+    s.onload = doCapture;
+    (document.head || document.documentElement).appendChild(s);
+  }
+
   document.addEventListener("click", recordClick, true);
   window.addEventListener("scroll", trackScroll, { passive: true });
   setInterval(function () { flush(false); }, 10000);
@@ -143,4 +198,7 @@
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") flush(true);
   });
+
+  if (document.readyState === "complete") maybeCaptureSnapshot();
+  else window.addEventListener("load", maybeCaptureSnapshot);
 })();
