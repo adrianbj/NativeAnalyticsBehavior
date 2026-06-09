@@ -54,11 +54,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         $out  = '<form method="get" class="nab-controls">';
-        $out .= '<label>Page <select name="path">' . $pathOpts . '</select></label> ';
-        $out .= '<label>Device <select name="device">' . $deviceOpts . '</select></label> ';
-        $out .= '<label>From <input type="date" name="from" value="' . $sanitizer->entities($from) . '"></label> ';
-        $out .= '<label>To <input type="date" name="to" value="' . $sanitizer->entities($to) . '"></label> ';
-        $out .= '<button type="submit" class="ui-button">Apply</button>';
+        $out .= '<label class="uk-form-label">Page <select name="path" class="uk-select uk-form-width-medium">' . $pathOpts . '</select></label> ';
+        $out .= '<label class="uk-form-label">Device <select name="device" class="uk-select uk-form-width-small">' . $deviceOpts . '</select></label> ';
+        $out .= '<label class="uk-form-label">From <input type="date" name="from" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($from) . '"></label> ';
+        $out .= '<label class="uk-form-label">To <input type="date" name="to" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($to) . '"></label> ';
+        $out .= '<button type="submit" class="uk-button uk-button-primary">Apply</button>';
         $out .= '</form>';
 
         if(!$paths) {
@@ -78,12 +78,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $out .= '<p class="nab-snapshot-meta">Backdrop captured ' . $sanitizer->entities($snapshot['captured_at'])
             . ' at ' . (int) $snapshot['capture_width'] . 'px. <span id="nab-unmatched"></span></p>';
-        $out .= '<div class="nab-heatmap-wrap">';
         $out .= '<div class="nab-stage">';
         $out .= '<iframe id="nab-frame" sandbox="allow-same-origin"></iframe>';
         $out .= '<canvas id="nab-canvas"></canvas>';
-        $out .= '</div>';
-        $out .= '<div class="nab-scroll" id="nab-scroll"><h3>Scroll depth</h3><div class="nab-scroll-bars"></div></div>';
         $out .= '</div>';
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
         $out .= '<script type="application/json" id="nab-snapshot">' . $snapshot['dom'] . '</script>';

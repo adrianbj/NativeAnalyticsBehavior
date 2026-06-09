@@ -246,15 +246,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         ];
 
         if($this->wire('user')->isGuest()) {
-            $page = $this->wire('page');
-            $reqPath = ($page && $page->id)
-                ? $this->normalizePath($page->path)
-                : $this->normalizePath((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH));
+            // Match the client's window.location.pathname (full path incl. URL
+            // segments, site-root prefix) so the freshness check keys on the same
+            // path_hash that clicks and the stored snapshot will use.
+            $reqPath = '/' . ltrim((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH), '/');
             $info = $this->snapshotFreshnessForPath($reqPath);
             $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
             $payload['snapshotLib'] = $this->getAssetUrl('assets/vendor/rrweb-snapshot.js')
                 . '?v=' . rawurlencode($this->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
-            $payload['snapshotPath'] = $reqPath;
             $payload['snapshotFresh'] = $info['fresh'];
             $payload['pageModified'] = $info['pageModified']; // string or null
         }
@@ -326,6 +325,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`visitor_hash`,`session_hash`)
             VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:visitor_hash,:session_hash)";
         $stmt = $db->prepare($sql);
+        // Scroll depth is re-sent on every flush so it survives a missed
+        // pagehide; keep one max-depth row per (session, path, device) rather
+        // than inserting a row per flush, which would count one pageview many
+        // times. Clicks stay plain multi-row inserts.
+        $findScroll = $db->prepare("SELECT `id`,`scroll_pct` FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='scroll' AND `session_hash`=:sh AND `path_hash`=:ph AND `device`=:dev LIMIT 1");
+        $bumpScroll = $db->prepare("UPDATE `" . self::EVENTS_TABLE . "`
+            SET `scroll_pct`=:pct, `created_at`=:ca WHERE `id`=:id");
 
         $inserted = 0;
         foreach(array_slice($data['events'], 0, 200) as $ev) {
@@ -335,24 +342,38 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
             $path = '/' . ltrim((string) ($ev['path'] ?? '/'), '/');
             $path = substr($path, 0, 767);
+            $pathHash = md5($path);
             $device = (string) ($ev['device'] ?? '');
             if(!in_array($device, $allowedDevices, true)) $device = 'desktop';
+            $sessionHash = $this->hashId($ev['sessionId'] ?? '');
+            $scrollPct = max(0, min(100, (int) ($ev['scroll_pct'] ?? 0)));
+
+            if($type === 'scroll' && $sessionHash !== '') {
+                $findScroll->execute([':sh' => $sessionHash, ':ph' => $pathHash, ':dev' => $device]);
+                $existing = $findScroll->fetch(\PDO::FETCH_ASSOC);
+                if($existing) {
+                    if($scrollPct > (int) $existing['scroll_pct']) {
+                        $bumpScroll->execute([':pct' => $scrollPct, ':ca' => $now, ':id' => $existing['id']]);
+                    }
+                    continue;
+                }
+            }
 
             $stmt->execute([
                 ':created_at' => $now,
                 ':created_date' => $today,
                 ':type' => $type,
                 ':path' => $path,
-                ':path_hash' => md5($path),
+                ':path_hash' => $pathHash,
                 ':device' => $device,
                 ':x_frac' => max(0, min(1000, (int) ($ev['x_frac'] ?? 0))),
                 ':y_px' => max(0, (int) ($ev['y_px'] ?? 0)),
                 ':vw' => max(0, min(65535, (int) ($ev['vw'] ?? 0))),
                 ':dh' => max(0, (int) ($ev['dh'] ?? 0)),
-                ':scroll_pct' => max(0, min(100, (int) ($ev['scroll_pct'] ?? 0))),
+                ':scroll_pct' => $scrollPct,
                 ':selector' => substr($sanitizer->text((string) ($ev['selector'] ?? '')), 0, 255),
                 ':visitor_hash' => $this->hashId($ev['visitorId'] ?? ''),
-                ':session_hash' => $this->hashId($ev['sessionId'] ?? ''),
+                ':session_hash' => $sessionHash,
             ]);
             $inserted++;
         }

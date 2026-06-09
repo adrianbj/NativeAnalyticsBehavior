@@ -1,14 +1,10 @@
 .nab-controls { margin: 1em 0; display: flex; gap: 1em; flex-wrap: wrap; align-items: end; }
 .nab-controls label { display: flex; flex-direction: column; font-size: .85em; }
-.nab-heatmap-wrap { display: flex; gap: 1.5em; align-items: flex-start; }
-.nab-stage { position: relative; flex: 1 1 auto; max-width: 1000px; border: 1px solid #ddd; overflow: auto; }
+.nab-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
 .nab-stage #nab-frame { height: 75vh; border: 0; display: block; background: #fff; }
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
 .nab-snapshot-meta { font-size: .85em; color: #555; margin: .5em 0; }
 .nab-snapshot-meta #nab-unmatched { color: #BC5620; }
-.nab-scroll { flex: 0 0 240px; }
-.nab-scroll-row { display: flex; align-items: center; gap: .5em; margin: 2px 0; font-size: .8em; }
-.nab-scroll-label { width: 36px; text-align: right; }
-.nab-scroll-track { flex: 1 1 auto; background: #eee; height: 14px; border-radius: 3px; overflow: hidden; }
-.nab-scroll-fill { display: block; height: 100%; background: #0C7896; }
-.nab-scroll-val { width: 36px; }
+#nab-legend { display: inline-flex; align-items: center; gap: .4em; margin-left: 1em; vertical-align: middle; }
+#nab-legend .nab-legend-bar { display: inline-block; width: 120px; height: 10px; border-radius: 5px; background: linear-gradient(to right, rgb(40,90,200), rgb(0,170,200), rgb(40,180,60), rgb(240,190,30), rgb(220,40,30)); }
+#nab-legend .nab-legend-lo, #nab-legend .nab-legend-hi { color: #555; }

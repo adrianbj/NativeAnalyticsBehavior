@@ -42,17 +42,71 @@
     return "desktop";
   }
 
+  // Redirect a click on a label (or a non-interactive node inside one) to the
+  // control it labels: a bare label box — especially an empty Inputfield header
+  // strip — sits in dead space and produces misleading heat. Genuine
+  // interactive targets (links, buttons, form fields) are kept as-is so e.g. the
+  // "terms and conditions" link inside the agree label isn't blamed on the box.
+  function isToggle(node) {
+    return node && node.nodeName.toLowerCase() === "input" && (node.type === "radio" || node.type === "checkbox");
+  }
+  function resolveTarget(el) {
+    if (!el || el.nodeType !== 1) return el;
+    var tag = el.nodeName.toLowerCase();
+    // A radio/checkbox is usually visually hidden behind a styled label (e.g.
+    // plan cards); anchor heat to the visible label, not the tiny input box.
+    if (isToggle(el)) {
+      var ownLabel = el.closest ? el.closest("label") : null;
+      return ownLabel || el;
+    }
+    if (tag === "a" || tag === "button" || tag === "select" || tag === "textarea") return el;
+    // Bubble a click on a non-interactive child (e.g. the title <span> inside an
+    // accordion <a>, or an <svg> icon inside a button) up to the interactive
+    // ancestor, so the heat lands on the whole control rather than splitting
+    // across the inner node and the wrapper.
+    var clickable = el.closest ? el.closest("a, button") : null;
+    if (clickable) return clickable;
+    var label = el.closest ? el.closest("label") : null;
+    if (label) {
+      var control = null;
+      var forId = label.getAttribute("for");
+      if (forId) control = document.getElementById(forId);
+      if (!control) control = label.querySelector("input, select, textarea, button");
+      // For radio/checkbox controls the label is the real click surface, so keep
+      // the label; for other controls (text fields, selects) redirect to them.
+      if (control) return isToggle(control) ? label : control;
+    }
+    return el;
+  }
+
+  // Escape class/id tokens for use in a selector. UIKit's responsive classes
+  // (e.g. "uk-width-1-1@m") contain "@", which is invalid raw in a selector and
+  // makes querySelector throw on the dashboard, dropping the click as unmatched.
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return "\\" + c; });
+  }
+
+  // UIKit assigns runtime IDs like "uk-accordion-5" whose numbering isn't stable
+  // between the snapshot capture and a later click, so anchoring on them
+  // guarantees a miss. Treat any uk-* id containing a digit as volatile and fall
+  // through to the structural path instead.
+  function volatileId(id) {
+    return /^uk-/.test(id) && /\d/.test(id);
+  }
+
   // --- stable CSS selector for a click target (structure only, no text) ---
   function cssSelector(el) {
     if (!el || el.nodeType !== 1) return "";
+    el = resolveTarget(el);
     var parts = [];
     var node = el;
     var depth = 0;
     while (node && node.nodeType === 1 && depth < 5) {
       var part = node.nodeName.toLowerCase();
-      if (node.id) { part += "#" + node.id; parts.unshift(part); break; }
+      if (node.id && !volatileId(node.id)) { part += "#" + cssEscape(node.id); parts.unshift(part); break; }
       if (node.classList && node.classList.length) {
-        part += "." + Array.prototype.slice.call(node.classList, 0, 2).join(".");
+        part += "." + Array.prototype.slice.call(node.classList, 0, 2).map(cssEscape).join(".");
       }
       var parent = node.parentNode;
       if (parent && parent.children && parent.children.length > 1) {
@@ -76,7 +130,7 @@
   var path = window.location.pathname || "/";
   var queue = [];
   var maxScrollPct = 0;
-  var scrollSent = false;
+  var lastSentScrollPct = -1;
 
   function recordClick(e) {
     var dw = docWidth() || 1;
@@ -107,16 +161,26 @@
   function buildPayload(includeScroll) {
     var events = queue.slice();
     queue = [];
-    if (includeScroll && !scrollSent) {
-      scrollSent = true;
-      events.push({
-        type: "scroll",
-        path: path,
-        device: deviceClass(),
-        scroll_pct: maxScrollPct,
-        visitorId: visitorId,
-        sessionId: sessionId
-      });
+    if (includeScroll) {
+      // Seed from the current viewport first: a visitor who never fired a
+      // scroll event still saw the initial fold, so record that depth rather
+      // than a misleading 0 (which would drop them out of the top band).
+      trackScroll();
+      // Re-send the running max on every flush (not just at pagehide) so scroll
+      // depth survives a missed unload. The server keeps only the deepest value
+      // per session, so this can't inflate the pageview count. Skip when the
+      // depth hasn't grown since the last send to avoid redundant beacons.
+      if (maxScrollPct !== lastSentScrollPct) {
+        lastSentScrollPct = maxScrollPct;
+        events.push({
+          type: "scroll",
+          path: path,
+          device: deviceClass(),
+          scroll_pct: maxScrollPct,
+          visitorId: visitorId,
+          sessionId: sessionId
+        });
+      }
     }
     if (!events.length) return null;
     return JSON.stringify({ events: events });
@@ -147,7 +211,7 @@
   function uploadSnapshot(node) {
     var envelope = JSON.stringify({
       dom: node,
-      path: cfg.snapshotPath || path,
+      path: path,
       device: deviceClass(),
       capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
       pageModified: cfg.pageModified || ""
@@ -192,7 +256,7 @@
 
   document.addEventListener("click", recordClick, true);
   window.addEventListener("scroll", trackScroll, { passive: true });
-  setInterval(function () { flush(false); }, 10000);
+  setInterval(function () { flush(true); }, 10000);
   window.addEventListener("pagehide", function () { flush(true); });
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") flush(true);
