@@ -500,6 +500,39 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * Tracked paths matching a search term, most-collected first. Backs the
+     * dashboard's path autocomplete: searching keeps the long tail reachable
+     * where the volume-capped getTrackedPaths() list would drop it.
+     *
+     * @return array<int,array{path:string,c:int}>
+     */
+    public function searchTrackedPaths($term, $limit = 20) {
+        $term = trim((string) $term);
+        $len = function_exists('mb_strlen') ? mb_strlen($term) : strlen($term);
+        if($len < 2) return [];
+        $limit = max(1, min(50, (int) $limit));
+        $like = '%' . $this->escapeLikeTerm($term) . '%';
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `path`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `path` LIKE :like
+            GROUP BY `path` ORDER BY c DESC LIMIT " . $limit);
+        $stmt->execute([':like' => $like]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        $out = [];
+        foreach($rows as $row) {
+            $out[] = ['path' => (string) $row['path'], 'c' => (int) $row['c']];
+        }
+        return $out;
+    }
+
+    // Escape MySQL LIKE wildcards (% and _) and the escape char itself so a
+    // user-typed term matches literally. Backslash first, so escapes added for
+    // % and _ are not doubled.
+    protected function escapeLikeTerm($term) {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], (string) $term);
+    }
+
+    /**
      * Click buckets for a path/device/date range.
      * Returns rows: ['x_bucket'=>0..99, 'y_bucket'=>(floor(y_px/20)), 'c'=>count, 'dh'=>maxDocHeight].
      */
@@ -521,22 +554,30 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * The stored DOM snapshot for a path/device, gunzipped.
-     * Returns ['capture_width'=>int, 'captured_at'=>string, 'dom'=>string(JSON)] or null.
+     * The stored DOM snapshot for a path/device, gunzipped. A $device of 'all'
+     * returns the widest captured snapshot for the path (broadest layout
+     * resolves the most click selectors).
+     * Returns ['device'=>string, 'capture_width'=>int, 'captured_at'=>string, 'dom'=>string(JSON)] or null.
      */
     public function getSnapshot($path, $device) {
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `capture_width`,`captured_at`,`dom_gz`
-            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
-        $stmt->execute([
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':dev' => (string) $device,
-        ]);
+        $ph = md5('/' . ltrim((string) $path, '/'));
+        if((string) $device === 'all') {
+            $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
+                FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph
+                ORDER BY `capture_width` DESC LIMIT 1");
+            $stmt->execute([':ph' => $ph]);
+        } else {
+            $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
+                FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
+            $stmt->execute([':ph' => $ph, ':dev' => (string) $device]);
+        }
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
         if(!$row) return null;
         $json = gzdecode($row['dom_gz']);
         if($json === false) return null;
         return [
+            'device' => (string) $row['device'],
             'capture_width' => (int) $row['capture_width'],
             'captured_at' => (string) $row['captured_at'],
             'dom' => $json,
@@ -549,17 +590,19 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getClickSelectorHeatmap($path, $device, $fromDate, $toDate) {
         $db = $this->wire('database');
+        $all = ((string) $device === 'all');
         $sql = "SELECT `selector`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+            WHERE `type`='click' AND `path_hash`=:ph" . ($all ? '' : ' AND `device`=:dev') . "
               AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
             GROUP BY `selector` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
-        $stmt->execute([
+        $params = [
             ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':dev' => (string) $device,
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
-        ]);
+        ];
+        if(!$all) $params[':dev'] = (string) $device;
+        $stmt->execute($params);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
@@ -569,18 +612,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getScrollHeatmap($path, $device, $fromDate, $toDate) {
         $db = $this->wire('database');
+        $all = ((string) $device === 'all');
         $sql = "SELECT FLOOR(`scroll_pct`/10) AS depth_bucket, COUNT(*) AS c
             FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='scroll' AND `path_hash`=:ph AND `device`=:dev
+            WHERE `type`='scroll' AND `path_hash`=:ph" . ($all ? '' : ' AND `device`=:dev') . "
               AND `created_date` BETWEEN :from AND :to
             GROUP BY depth_bucket";
         $stmt = $db->prepare($sql);
-        $stmt->execute([
+        $params = [
             ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':dev' => (string) $device,
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
-        ]);
+        ];
+        if(!$all) $params[':dev'] = (string) $device;
+        $stmt->execute($params);
         $out = array_fill(0, 11, 0);
         foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
             $b = max(0, min(10, (int) $row['depth_bucket']));

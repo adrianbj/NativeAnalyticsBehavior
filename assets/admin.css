@@ -8,3 +8,9 @@
 #nab-legend { display: inline-flex; align-items: center; gap: .4em; margin-left: 1em; vertical-align: middle; }
 #nab-legend .nab-legend-bar { display: inline-block; width: 120px; height: 10px; border-radius: 5px; background: linear-gradient(to right, rgb(40,90,200), rgb(0,170,200), rgb(40,180,60), rgb(240,190,30), rgb(220,40,30)); }
 #nab-legend .nab-legend-lo, #nab-legend .nab-legend-hi { color: #555; }
+.nab-pathfind { position: relative; }
+.nab-pathfind-results { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 240px; max-width: 420px; max-height: 280px; overflow-y: auto; background: #fff; border: 1px solid #ccc; border-top: 0; border-radius: 0 0 4px 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+.nab-pathfind-item { display: flex; justify-content: space-between; gap: 1em; width: 100%; text-align: left; border: 0; background: none; padding: .4em .6em; cursor: pointer; font-size: .85em; }
+.nab-pathfind-item:hover, .nab-pathfind-item:focus { background: #f0f6f8; }
+.nab-pathfind-item .nab-pathfind-count { color: #888; }
+.nab-pathfind-empty { padding: .4em .6em; color: #888; font-size: .85em; }
