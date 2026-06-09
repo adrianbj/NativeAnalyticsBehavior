@@ -23,31 +23,68 @@
       return h || 1000;
     }
 
+    // The canvas overlays the iframe as a sibling in the admin document (where
+    // it reliably renders — a canvas injected into the sandboxed iframe does
+    // not composite). To keep marks glued to the content while the iframe
+    // scrolls internally, we read the iframe's own scroll offset (same-origin)
+    // and subtract it when drawing.
+    function frameMetrics() {
+      try {
+        var win = frame.contentWindow;
+        var doc = frame.contentDocument || (win && win.document);
+        if (!doc || !doc.documentElement) return null;
+        var root = doc.documentElement;
+        var contentHeight = Math.max(root.scrollHeight || 0, doc.body ? doc.body.scrollHeight : 0);
+        var scrollTop = (win && typeof win.scrollY === "number") ? win.scrollY : (root.scrollTop || 0);
+        return { contentHeight: contentHeight, scrollTop: scrollTop };
+      } catch (e) { return null; }
+    }
+
     function drawClicks() {
       var w = frame.clientWidth;
-      var dh = maxDocHeight();
+      var h = frame.clientHeight;
+      if (!w || !h) return;
       canvas.width = w;
-      canvas.height = frame.clientHeight;
+      canvas.height = h;
       var ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, w, h);
+
+      var m = frameMetrics();
+      var contentH = (m && m.contentHeight) || maxDocHeight();
+      var scrollTop = m ? m.scrollTop : 0;
+      var dh = maxDocHeight();
 
       var maxC = 1;
       for (var i = 0; i < clicks.length; i++) { if (clicks[i].c > maxC) maxC = parseInt(clicks[i].c, 10); }
 
+      var radius = Math.max(24, Math.round(w * 0.04));
       for (var j = 0; j < clicks.length; j++) {
         var c = clicks[j];
         var x = (parseInt(c.x_bucket, 10) / 100) * w;
-        var y = ((parseInt(c.y_bucket, 10) * 20) / dh) * canvas.height;
+        var yDoc = ((parseInt(c.y_bucket, 10) * 20) / dh) * contentH;
+        var y = yDoc - scrollTop;
+        if (y < -radius || y > h + radius) continue;
         var intensity = Math.min(1, (parseInt(c.c, 10) / maxC));
-        var radius = 18;
         var grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
-        grad.addColorStop(0, "rgba(255,0,0," + (0.15 + intensity * 0.55) + ")");
+        grad.addColorStop(0, "rgba(255,0,0," + (0.35 + intensity * 0.45) + ")");
         grad.addColorStop(1, "rgba(255,0,0,0)");
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+
+    function bindFrameScroll() {
+      try {
+        var win = frame.contentWindow;
+        if (win) win.addEventListener("scroll", drawClicks, { passive: true });
+      } catch (e) {}
+    }
+
+    function setup() {
+      drawClicks();
+      bindFrameScroll();
     }
 
     function drawScroll() {
@@ -66,8 +103,10 @@
       wrap.innerHTML = html;
     }
 
-    frame.addEventListener("load", drawClicks);
+    frame.addEventListener("load", setup);
     window.addEventListener("resize", drawClicks);
+    // In case the iframe finished loading before this deferred script ran.
+    if (frameMetrics()) setup();
     drawScroll();
   });
 })();
