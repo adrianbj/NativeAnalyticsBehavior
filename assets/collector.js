@@ -152,14 +152,10 @@
       capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
       pageModified: cfg.pageModified || ""
     });
+    // Snapshots fire on load (page is alive) and are far larger than sendBeacon's
+    // ~64KB cap; keepalive fetch carries the same cap, so use a plain fetch.
     try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(cfg.snapshotEndpoint, new Blob([envelope], { type: "application/json" }));
-        return;
-      }
-    } catch (e) {}
-    try {
-      fetch(cfg.snapshotEndpoint, { method: "POST", body: envelope, keepalive: true, headers: { "Content-Type": "application/json" } });
+      fetch(cfg.snapshotEndpoint, { method: "POST", body: envelope, headers: { "Content-Type": "application/json" } });
     } catch (e) {}
   }
 
