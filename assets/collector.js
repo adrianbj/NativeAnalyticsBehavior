@@ -165,9 +165,9 @@
 
   function doCapture() {
     if (!window.rrwebSnapshot || !window.rrwebSnapshot.snapshot) return;
-    var node;
+    var result;
     try {
-      node = window.rrwebSnapshot.snapshot(document, {
+      result = window.rrwebSnapshot.snapshot(document, {
         blockSelector: "[data-na-block]",
         maskAllInputs: true,
         maskTextSelector: "[data-na-mask]",
@@ -175,6 +175,9 @@
         recordCanvas: false
       });
     } catch (e) { return; }
+    // snapshot() returns [serializedNode, idNodeMap]; the map holds live DOM nodes
+    // (circular, not serializable), so keep only the serializable node tree.
+    var node = Array.isArray(result) ? result[0] : result;
     if (!node) return;
     stripScripts(node);
     uploadSnapshot(node);
