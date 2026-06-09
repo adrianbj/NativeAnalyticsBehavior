@@ -467,6 +467,49 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * The stored DOM snapshot for a path/device, gunzipped.
+     * Returns ['capture_width'=>int, 'captured_at'=>string, 'dom'=>string(JSON)] or null.
+     */
+    public function getSnapshot($path, $device) {
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `capture_width`,`captured_at`,`dom_gz`
+            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+        ]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        if(!$row) return null;
+        $json = gzdecode($row['dom_gz']);
+        if($json === false) return null;
+        return [
+            'capture_width' => (int) $row['capture_width'],
+            'captured_at' => (string) $row['captured_at'],
+            'dom' => $json,
+        ];
+    }
+
+    /**
+     * Click counts grouped by CSS selector for a path/device/date range.
+     * Returns rows: ['selector'=>string, 'c'=>count], descending by count.
+     */
+    public function getClickSelectorHeatmap($path, $device, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT `selector`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
+            GROUP BY `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
      * Scroll-depth distribution: count of pageviews reaching each 10% bucket.
      * Returns an 11-element array indexed 0..10 (0%,10%..100%).
      */
