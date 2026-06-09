@@ -24,6 +24,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
         $css = $this->core->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/admin.css'));
         $this->wire('config')->styles->add($css);
+        $lib = $this->core->getAssetUrl('assets/vendor/rrweb-snapshot.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
+        $this->wire('config')->scripts->add($lib);
     }
 
     public function ___execute() {
@@ -36,9 +38,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
         $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-30 days'));
 
-        $clicks = $this->core->getClickHeatmap($path, $device, $from, $to);
+        $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
-        $iframeUrl = rtrim((string) $this->wire('config')->urls->httpRoot, '/') . '/' . ltrim($path, '/');
+        $snapshot = $this->core->getSnapshot($path, $device);
 
         // Controls form
         $deviceOpts = '';
@@ -63,16 +65,28 @@ class ProcessNativeAnalyticsBehavior extends Process {
             return $out . '<p>No behavior data collected yet. Browse the front-end (and click around) to populate heatmaps.</p>';
         }
 
-        $payload = json_encode(['clicks' => $clicks, 'scroll' => $scroll], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        if(!$snapshot) {
+            return $out . '<p>No snapshot captured yet for <strong>' . $sanitizer->entities($path)
+                . '</strong> (' . $sanitizer->entities($device) . '). Visit that page as a logged-out visitor to capture one, then reload this dashboard.</p>';
+        }
 
+        $payload = json_encode([
+            'clicks' => $clicks,
+            'scroll' => $scroll,
+            'captureWidth' => $snapshot['capture_width'],
+        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+
+        $out .= '<p class="nab-snapshot-meta">Backdrop captured ' . $sanitizer->entities($snapshot['captured_at'])
+            . ' at ' . (int) $snapshot['capture_width'] . 'px. <span id="nab-unmatched"></span></p>';
         $out .= '<div class="nab-heatmap-wrap">';
         $out .= '<div class="nab-stage">';
-        $out .= '<iframe id="nab-frame" src="' . $sanitizer->entities($iframeUrl) . '" sandbox="allow-same-origin"></iframe>';
+        $out .= '<iframe id="nab-frame" sandbox="allow-same-origin"></iframe>';
         $out .= '<canvas id="nab-canvas"></canvas>';
         $out .= '</div>';
         $out .= '<div class="nab-scroll" id="nab-scroll"><h3>Scroll depth</h3><div class="nab-scroll-bars"></div></div>';
         $out .= '</div>';
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
+        $out .= '<script type="application/json" id="nab-snapshot">' . $snapshot['dom'] . '</script>';
 
         $js = $this->core->getAssetUrl('assets/heatmap.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/heatmap.js'));
         $out .= '<script src="' . $sanitizer->entities($js) . '" defer></script>';
