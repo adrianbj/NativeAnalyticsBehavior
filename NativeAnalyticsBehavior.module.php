@@ -380,7 +380,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $pm = (string) ($data['pageModified'] ?? '');
         $capturedModified = preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $pm) ? $pm : null;
 
-        $domJson = json_encode($data['dom'], JSON_UNESCAPED_SLASHES);
+        // JSON_HEX_TAG escapes < and > so the stored DOM can be safely embedded in a
+        // <script type="application/json"> block on the admin dashboard; without it,
+        // page text containing the literal "</script>" would break out of the tag.
+        $domJson = json_encode($data['dom'], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
         if($domJson === false) $this->sendJson(400, ['ok' => false]);
         $gz = gzencode($domJson, 6);
         if($gz === false) $this->sendJson(500, ['ok' => false]);
