@@ -298,6 +298,63 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
     }
 
+    /** Distinct paths that have collected data, most-active first. */
+    public function getTrackedPaths($limit = 200) {
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `path`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            GROUP BY `path` ORDER BY c DESC LIMIT :lim");
+        $stmt->bindValue(':lim', (int) $limit, \PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(\PDO::FETCH_COLUMN);
+    }
+
+    /**
+     * Click buckets for a path/device/date range.
+     * Returns rows: ['x_bucket'=>0..99, 'y_bucket'=>(floor(y_px/20)), 'c'=>count, 'dh'=>maxDocHeight].
+     */
+    public function getClickHeatmap($path, $device, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT FLOOR(`x_frac`/10) AS x_bucket, FLOOR(`y_px`/20) AS y_bucket, COUNT(*) AS c, MAX(`dh`) AS dh
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to
+            GROUP BY x_bucket, y_bucket";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Scroll-depth distribution: count of pageviews reaching each 10% bucket.
+     * Returns an 11-element array indexed 0..10 (0%,10%..100%).
+     */
+    public function getScrollHeatmap($path, $device, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT FLOOR(`scroll_pct`/10) AS depth_bucket, COUNT(*) AS c
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='scroll' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to
+            GROUP BY depth_bucket";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        $out = array_fill(0, 11, 0);
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $b = max(0, min(10, (int) $row['depth_bucket']));
+            $out[$b] += (int) $row['c'];
+        }
+        return $out;
+    }
+
     public function getModuleConfigInputfields(array $data) {
         $modules = $this->wire('modules');
         $data = array_merge($this->defaults, $data);
