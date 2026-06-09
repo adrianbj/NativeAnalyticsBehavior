@@ -298,6 +298,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
     }
 
+    /**
+     * Delete all collected events for a given raw visitor or session ID.
+     * Pass the same un-hashed ID the client used (e.g. the pwna_vid value).
+     * Returns the number of rows deleted.
+     */
+    public function eraseVisitor($visitorId) {
+        $hash = $this->hashId($visitorId);
+        if($hash === '') return 0;
+        $db = $this->wire('database');
+        $stmt = $db->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `visitor_hash`=:h");
+        $stmt->execute([':h' => $hash]);
+        return $stmt->rowCount();
+    }
+
     /** Distinct paths that have collected data, most-active first. */
     public function getTrackedPaths($limit = 200) {
         $db = $this->wire('database');
@@ -409,6 +423,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
     public function ___install() {}
     public function ___uninstall() {
-        // Task 11 fills in table drop.
+        try {
+            $this->wire('database')->exec("DROP TABLE IF EXISTS `" . self::EVENTS_TABLE . "`");
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics-behavior', 'Uninstall drop failed: ' . $e->getMessage());
+        }
     }
 }
