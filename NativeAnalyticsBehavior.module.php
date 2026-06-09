@@ -6,6 +6,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
     const EVENTS_TABLE = 'nab_events';
     const COLLECT_ROUTE = '/nab-collect';
+    const SNAPSHOT_TABLE = 'nab_snapshots';
+    const SNAPSHOT_ROUTE = '/nab-snapshot';
+    const SNAPSHOT_MAX_BYTES = 4194304; // 4 MB raw upload cap (DOM + inlined CSS)
+    const SNAPSHOT_BACKSTOP_DAYS = 30;  // re-capture if older than this regardless of edits
 
     protected $defaults = [
         'enabled' => 1,
@@ -144,6 +148,19 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             KEY `type_path_device` (`type`, `path_hash`, `device`),
             KEY `visitor_hash` (`visitor_hash`),
             KEY `session_hash` (`session_hash`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $db->exec("CREATE TABLE IF NOT EXISTS `" . self::SNAPSHOT_TABLE . "` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `path` VARCHAR(767) NOT NULL DEFAULT '',
+            `path_hash` CHAR(32) NOT NULL DEFAULT '',
+            `device` VARCHAR(16) NOT NULL DEFAULT '',
+            `capture_width` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            `captured_modified` DATETIME NULL DEFAULT NULL,
+            `captured_at` DATETIME NOT NULL,
+            `dom_gz` MEDIUMBLOB NOT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `bucket` (`path_hash`, `device`),
+            KEY `captured_at` (`captured_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $done = true;
     }
@@ -293,6 +310,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $db = $this->wire('database');
             $stmt = $db->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff");
             $stmt->execute([':cutoff' => $cutoff]);
+            $stmt2 = $db->prepare("DELETE FROM `" . self::SNAPSHOT_TABLE . "` WHERE `captured_at` < :cutoff");
+            $stmt2->execute([':cutoff' => $cutoff]);
         } catch(\Throwable $e) {
             $this->wire('log')->save('native-analytics-behavior', 'Purge failed: ' . $e->getMessage());
         }
@@ -425,6 +444,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     public function ___uninstall() {
         try {
             $this->wire('database')->exec("DROP TABLE IF EXISTS `" . self::EVENTS_TABLE . "`");
+            $this->wire('database')->exec("DROP TABLE IF EXISTS `" . self::SNAPSHOT_TABLE . "`");
         } catch(\Throwable $e) {
             $this->wire('log')->save('native-analytics-behavior', 'Uninstall drop failed: ' . $e->getMessage());
         }
