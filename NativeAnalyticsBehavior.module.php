@@ -41,6 +41,36 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->maybeHandleSnapshot();
 
         $this->addHookAfter('LazyCron::everyDay', $this, 'handleDailyCron');
+
+        // Inject a "Behavior" tab into the main NativeAnalytics dashboard. The
+        // hooks are lazy (only fire when the dashboard renders its tabs), so
+        // registering them unconditionally here is cheap; per-user gating lives
+        // in the handlers.
+        $this->addHookAfter('ProcessNativeAnalytics::getTabLabels', $this, 'hookTabLabels');
+        $this->addHookAfter('ProcessNativeAnalytics::getTabs', $this, 'hookTabs');
+    }
+
+    protected function canViewBehaviorTab() {
+        if(!$this->enabled || !$this->enableHeatmaps) return false;
+        return $this->wire('user')->hasPermission('nativeanalyticsbehavior-view');
+    }
+
+    public function hookTabLabels(HookEvent $event) {
+        if(!$this->canViewBehaviorTab()) return;
+        $labels = $event->return;
+        if(!is_array($labels)) return;
+        $labels['behavior'] = 'Behavior';
+        $event->return = $labels;
+    }
+
+    public function hookTabs(HookEvent $event) {
+        if(!$this->canViewBehaviorTab()) return;
+        $tabs = $event->return;
+        if(!is_array($tabs)) return;
+        $proc = $this->wire('modules')->get('ProcessNativeAnalyticsBehavior');
+        if(!$proc) return;
+        $tabs['behavior'] = $proc->renderTabContent();
+        $event->return = $tabs;
     }
 
     public function ready() {

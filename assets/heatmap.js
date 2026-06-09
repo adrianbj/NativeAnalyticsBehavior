@@ -257,6 +257,13 @@
       setTimeout(function () { drawHeat(); bindFrameScroll(); }, 50);
       setTimeout(drawHeat, 400);
       setTimeout(drawHeat, 1200);
+      // When embedded in a WireTab, the panel starts display:none, so the frame
+      // has zero size at load and every early drawHeat bails. Redraw once the
+      // tab is shown and the frame gains real dimensions. drawHeat no-ops on a
+      // zero-size frame, so the initial 0->0 callbacks are harmless.
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(function () { drawHeat(); }).observe(frame);
+      }
     }
 
     setup();

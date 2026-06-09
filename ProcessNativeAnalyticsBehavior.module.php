@@ -22,6 +22,15 @@ class ProcessNativeAnalyticsBehavior extends Process {
     public function init() {
         parent::init();
         $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $this->addAssets();
+    }
+
+    // Add the backdrop stylesheet and rrweb rebuild library to the page head.
+    // Called from init() for the standalone page and again from
+    // renderTabContent() for the embedded-tab case (config arrays dedupe by
+    // URL, so a double call is harmless).
+    protected function addAssets() {
+        if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
         $css = $this->core->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/admin.css'));
         $this->wire('config')->styles->add($css);
         $lib = $this->core->getAssetUrl('assets/vendor/rrweb-snapshot.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
@@ -29,6 +38,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     public function ___execute() {
+        return $this->renderTabContent();
+    }
+
+    // Build the heatmap dashboard markup (controls, backdrop stage, embedded
+    // data, loader script). Public so NativeAnalyticsBehavior can call it to
+    // render the injected "Behavior" tab in the main NativeAnalytics dashboard.
+    public function renderTabContent() {
+        $this->addAssets();
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
 
