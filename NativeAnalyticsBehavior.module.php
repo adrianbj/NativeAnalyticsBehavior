@@ -118,7 +118,35 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     // --- filled in by later tasks ---
-    protected function ensureSchema($force = false) { /* Task 2 */ }
+    protected function ensureSchema($force = false) {
+        static $done = false;
+        if($done && !$force) return;
+        $db = $this->wire('database');
+        $db->exec("CREATE TABLE IF NOT EXISTS `" . self::EVENTS_TABLE . "` (
+            `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `created_at` DATETIME NOT NULL,
+            `created_date` DATE NOT NULL,
+            `type` VARCHAR(16) NOT NULL DEFAULT '',
+            `path` VARCHAR(767) NOT NULL DEFAULT '',
+            `path_hash` CHAR(32) NOT NULL DEFAULT '',
+            `device` VARCHAR(16) NOT NULL DEFAULT '',
+            `x_frac` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            `y_px` INT UNSIGNED NOT NULL DEFAULT 0,
+            `vw` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            `dh` INT UNSIGNED NOT NULL DEFAULT 0,
+            `scroll_pct` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            `selector` VARCHAR(255) NOT NULL DEFAULT '',
+            `visitor_hash` CHAR(64) NOT NULL DEFAULT '',
+            `session_hash` CHAR(64) NOT NULL DEFAULT '',
+            PRIMARY KEY (`id`),
+            KEY `created_at` (`created_at`),
+            KEY `created_date` (`created_date`),
+            KEY `type_path_device` (`type`, `path_hash`, `device`),
+            KEY `visitor_hash` (`visitor_hash`),
+            KEY `session_hash` (`session_hash`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $done = true;
+    }
     protected function shouldInjectCurrentRequest() { return false; /* Task 4 */ }
     public function injectCollector(HookEvent $event) { /* Task 4 */ }
     protected function maybeHandleCollect() { /* Task 6 */ }
