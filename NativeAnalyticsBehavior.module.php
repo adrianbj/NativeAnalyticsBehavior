@@ -121,6 +121,37 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return rtrim((string) $this->wire('config')->urls->root, '/') . self::COLLECT_ROUTE . '/';
     }
 
+    public function getSnapshotEndpointUrl() {
+        return rtrim((string) $this->wire('config')->urls->root, '/') . self::SNAPSHOT_ROUTE . '/';
+    }
+
+    /**
+     * Per-device freshness for the snapshot of a given path.
+     * Returns ['fresh' => ['desktop'=>bool,'tablet'=>bool,'mobile'=>bool], 'pageModified' => 'Y-m-d H:i:s'|null].
+     * A device is fresh when a stored snapshot exists, is not older than $page->modified, and is within the backstop window.
+     */
+    public function snapshotFreshnessForPath($path) {
+        $fresh = ['desktop' => false, 'tablet' => false, 'mobile' => false];
+        $page = $this->wire('page');
+        $pageModified = ($page && $page->id && $page->modified)
+            ? date('Y-m-d H:i:s', (int) $page->modified)
+            : null;
+        $cutoff = date('Y-m-d H:i:s', strtotime('-' . self::SNAPSHOT_BACKSTOP_DAYS . ' days'));
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `device`,`captured_modified`,`captured_at`
+            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph");
+        $stmt->execute([':ph' => md5('/' . ltrim((string) $path, '/'))]);
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $dev = (string) $row['device'];
+            if(!array_key_exists($dev, $fresh)) continue;
+            $ageOk = ((string) $row['captured_at']) >= $cutoff;
+            $modOk = ($pageModified === null)
+                || ($row['captured_modified'] !== null && ((string) $row['captured_modified']) >= $pageModified);
+            $fresh[$dev] = $ageOk && $modOk;
+        }
+        return ['fresh' => $fresh, 'pageModified' => $pageModified];
+    }
+
     // --- filled in by later tasks ---
     protected function ensureSchema($force = false) {
         static $done = false;
@@ -212,6 +243,21 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             'sampleRate' => (int) $this->sampleRate,
             'heatmaps' => (bool) $this->enableHeatmaps,
         ];
+
+        if($this->wire('user')->isGuest()) {
+            $page = $this->wire('page');
+            $reqPath = ($page && $page->id)
+                ? $this->normalizePath($page->path)
+                : $this->normalizePath((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH));
+            $info = $this->snapshotFreshnessForPath($reqPath);
+            $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
+            $payload['snapshotLib'] = $this->getAssetUrl('assets/vendor/rrweb-snapshot.js')
+                . '?v=' . rawurlencode($this->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
+            $payload['snapshotPath'] = $reqPath;
+            $payload['snapshotFresh'] = $info['fresh'];
+            $payload['pageModified'] = $info['pageModified']; // string or null
+        }
+
         $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         $configJson = json_encode($payload, $jsonFlags);
         if($configJson === false) return;
