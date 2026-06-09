@@ -286,7 +286,17 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
         $this->sendJson(200, ['ok' => true, 'stored' => $inserted]);
     }
-    public function handleDailyCron(HookEvent $event) { /* Task 7 */ }
+    public function handleDailyCron(HookEvent $event) {
+        $days = max(1, (int) $this->retentionDays);
+        $cutoff = date('Y-m-d H:i:s', strtotime('-' . $days . ' days'));
+        try {
+            $db = $this->wire('database');
+            $stmt = $db->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff");
+            $stmt->execute([':cutoff' => $cutoff]);
+        } catch(\Throwable $e) {
+            $this->wire('log')->save('native-analytics-behavior', 'Purge failed: ' . $e->getMessage());
+        }
+    }
 
     public function getModuleConfigInputfields(array $data) {
         $modules = $this->wire('modules');
