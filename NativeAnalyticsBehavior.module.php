@@ -38,6 +38,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->applyDefaults();
         $this->ensureSchema();
         $this->maybeHandleCollect();
+        $this->maybeHandleSnapshot();
 
         $this->addHookAfter('LazyCron::everyDay', $this, 'handleDailyCron');
     }
@@ -278,6 +279,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->handleCollectRequest();
     }
 
+    protected function maybeHandleSnapshot() {
+        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        if($uri === '') return;
+        $path = rtrim($this->normalizePath((string) parse_url($uri, PHP_URL_PATH)), '/');
+        if($path !== self::SNAPSHOT_ROUTE) return;
+        $this->handleSnapshotRequest();
+    }
+
     protected function sendJson($status, array $data) {
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
@@ -349,6 +358,55 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
         $this->sendJson(200, ['ok' => true, 'stored' => $inserted]);
     }
+
+    protected function handleSnapshotRequest() {
+        if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
+        if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
+        if(in_array($this->clientIp(), $this->configLines('blockedIps'), true)) $this->sendJson(204, ['ok' => true]);
+
+        $raw = file_get_contents('php://input');
+        if($raw === false || strlen($raw) > self::SNAPSHOT_MAX_BYTES) $this->sendJson(413, ['ok' => false]);
+        $data = json_decode($raw, true);
+        if(!is_array($data) || !isset($data['dom']) || !is_array($data['dom'])) $this->sendJson(400, ['ok' => false]);
+
+        $allowedDevices = ['desktop', 'tablet', 'mobile'];
+        $device = (string) ($data['device'] ?? '');
+        if(!in_array($device, $allowedDevices, true)) $device = 'desktop';
+
+        $path = '/' . ltrim((string) ($data['path'] ?? '/'), '/');
+        $path = substr($path, 0, 767);
+        $width = max(0, min(65535, (int) ($data['capture_width'] ?? 0)));
+
+        $pm = (string) ($data['pageModified'] ?? '');
+        $capturedModified = preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $pm) ? $pm : null;
+
+        $domJson = json_encode($data['dom'], JSON_UNESCAPED_SLASHES);
+        if($domJson === false) $this->sendJson(400, ['ok' => false]);
+        $gz = gzencode($domJson, 6);
+        if($gz === false) $this->sendJson(500, ['ok' => false]);
+
+        $db = $this->wire('database');
+        $sql = "INSERT INTO `" . self::SNAPSHOT_TABLE . "`
+            (`path`,`path_hash`,`device`,`capture_width`,`captured_modified`,`captured_at`,`dom_gz`)
+            VALUES (:path,:ph,:device,:w,:cm,:now,:dom)
+            ON DUPLICATE KEY UPDATE
+              `path`=VALUES(`path`), `capture_width`=VALUES(`capture_width`),
+              `captured_modified`=VALUES(`captured_modified`), `captured_at`=VALUES(`captured_at`),
+              `dom_gz`=VALUES(`dom_gz`)";
+        $stmt = $db->prepare($sql);
+        $stmt->bindValue(':path', $path);
+        $stmt->bindValue(':ph', md5($path));
+        $stmt->bindValue(':device', $device);
+        $stmt->bindValue(':w', $width, \PDO::PARAM_INT);
+        if($capturedModified === null) $stmt->bindValue(':cm', null, \PDO::PARAM_NULL);
+        else $stmt->bindValue(':cm', $capturedModified);
+        $stmt->bindValue(':now', date('Y-m-d H:i:s'));
+        $stmt->bindValue(':dom', $gz, \PDO::PARAM_LOB);
+        $stmt->execute();
+
+        $this->sendJson(200, ['ok' => true]);
+    }
+
     public function handleDailyCron(HookEvent $event) {
         $days = max(1, (int) $this->retentionDays);
         $cutoff = date('Y-m-d H:i:s', strtotime('-' . $days . ' days'));
