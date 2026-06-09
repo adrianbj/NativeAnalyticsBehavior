@@ -207,7 +207,85 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
         $event->return = preg_replace('~</body>~i', $injected . '</body>', $html, 1);
     }
-    protected function maybeHandleCollect() { /* Task 6 */ }
+    protected function maybeHandleCollect() {
+        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        if($uri === '') return;
+        $path = rtrim($this->normalizePath((string) parse_url($uri, PHP_URL_PATH)), '/');
+        if($path !== self::COLLECT_ROUTE) return;
+        $this->handleCollectRequest();
+    }
+
+    protected function sendJson($status, array $data) {
+        http_response_code($status);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo json_encode($data);
+        exit;
+    }
+
+    protected function clientIp() {
+        return isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+    }
+
+    protected function hashId($value) {
+        $value = trim((string) $value);
+        if($value === '') return '';
+        return hash('sha256', (string) $this->get('hashSalt') . '|' . $value);
+    }
+
+    protected function handleCollectRequest() {
+        if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
+        if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
+        if(in_array($this->clientIp(), $this->configLines('blockedIps'), true)) $this->sendJson(204, ['ok' => true]);
+
+        $raw = file_get_contents('php://input');
+        if($raw === false || strlen($raw) > 262144) $this->sendJson(413, ['ok' => false]);
+        $data = json_decode($raw, true);
+        if(!is_array($data) || empty($data['events']) || !is_array($data['events'])) $this->sendJson(400, ['ok' => false]);
+
+        $sanitizer = $this->wire('sanitizer');
+        $db = $this->wire('database');
+        $now = date('Y-m-d H:i:s');
+        $today = date('Y-m-d');
+        $allowedTypes = ['click', 'scroll'];
+        $allowedDevices = ['desktop', 'tablet', 'mobile'];
+
+        $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
+            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`visitor_hash`,`session_hash`)
+            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:visitor_hash,:session_hash)";
+        $stmt = $db->prepare($sql);
+
+        $inserted = 0;
+        foreach(array_slice($data['events'], 0, 200) as $ev) {
+            if(!is_array($ev)) continue;
+            $type = (string) ($ev['type'] ?? '');
+            if(!in_array($type, $allowedTypes, true)) continue;
+
+            $path = '/' . ltrim((string) ($ev['path'] ?? '/'), '/');
+            $path = substr($path, 0, 767);
+            $device = (string) ($ev['device'] ?? '');
+            if(!in_array($device, $allowedDevices, true)) $device = 'desktop';
+
+            $stmt->execute([
+                ':created_at' => $now,
+                ':created_date' => $today,
+                ':type' => $type,
+                ':path' => $path,
+                ':path_hash' => md5($path),
+                ':device' => $device,
+                ':x_frac' => max(0, min(1000, (int) ($ev['x_frac'] ?? 0))),
+                ':y_px' => max(0, (int) ($ev['y_px'] ?? 0)),
+                ':vw' => max(0, min(65535, (int) ($ev['vw'] ?? 0))),
+                ':dh' => max(0, (int) ($ev['dh'] ?? 0)),
+                ':scroll_pct' => max(0, min(100, (int) ($ev['scroll_pct'] ?? 0))),
+                ':selector' => substr($sanitizer->text((string) ($ev['selector'] ?? '')), 0, 255),
+                ':visitor_hash' => $this->hashId($ev['visitorId'] ?? ''),
+                ':session_hash' => $this->hashId($ev['sessionId'] ?? ''),
+            ]);
+            $inserted++;
+        }
+        $this->sendJson(200, ['ok' => true, 'stored' => $inserted]);
+    }
     public function handleDailyCron(HookEvent $event) { /* Task 7 */ }
 
     public function getModuleConfigInputfields(array $data) {
