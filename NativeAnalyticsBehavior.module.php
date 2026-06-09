@@ -147,8 +147,66 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $done = true;
     }
-    protected function shouldInjectCurrentRequest() { return false; /* Task 4 */ }
-    public function injectCollector(HookEvent $event) { /* Task 4 */ }
+    protected function shouldInjectCurrentRequest() {
+        if(!$this->enabled || !$this->enableHeatmaps) return false;
+        if($this->wire('config')->ajax) return false;
+        $page = $this->wire('page');
+        if(!$page || !$page->id) return false;
+        if($this->isExcludedTemplate($page)) return false;
+        if($this->isExcludedPath()) return false;
+        return true;
+    }
+
+    protected function configLines($key) {
+        $raw = (string) $this->get($key);
+        if($raw === '') return [];
+        $out = [];
+        foreach(preg_split('/\r\n|\r|\n/', $raw) as $line) {
+            $line = trim($line);
+            if($line !== '') $out[] = $line;
+        }
+        return $out;
+    }
+
+    protected function isExcludedTemplate(Page $page) {
+        $name = $page->template ? (string) $page->template->name : '';
+        if($name === '') return false;
+        return in_array($name, $this->configLines('excludedTemplates'), true);
+    }
+
+    protected function isExcludedPath() {
+        $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $path = $this->normalizePath((string) parse_url($uri, PHP_URL_PATH));
+        foreach($this->configLines('excludedPaths') as $prefix) {
+            $prefix = $this->normalizePath($prefix);
+            if($prefix !== '/' && strpos($path, $prefix) === 0) return true;
+        }
+        return false;
+    }
+
+    public function injectCollector(HookEvent $event) {
+        $html = (string) $event->return;
+        if($html === '') return;
+        if(stripos($html, '</body>') === false) return;
+        if(stripos($html, 'data-nab-collector="1"') !== false) return;
+
+        $payload = [
+            'collectEndpoint' => $this->getCollectEndpointUrl(),
+            'sampleRate' => (int) $this->sampleRate,
+            'heatmaps' => (bool) $this->enableHeatmaps,
+        ];
+        $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
+        $configJson = json_encode($payload, $jsonFlags);
+        if($configJson === false) return;
+
+        $scriptUrl = $this->getAssetUrl('assets/collector.js') . '?v=' . rawurlencode($this->getAssetVersion('assets/collector.js'));
+        $nonceAttr = $this->getScriptNonceAttribute();
+
+        $injected = "\n<script" . $nonceAttr . ">window.NAB_CONFIG = " . $configJson . ";</script>\n";
+        $injected .= '<script' . $nonceAttr . ' src="' . $this->wire('sanitizer')->entities($scriptUrl) . '" data-nab-collector="1" defer></script>' . "\n";
+
+        $event->return = preg_replace('~</body>~i', $injected . '</body>', $html, 1);
+    }
     protected function maybeHandleCollect() { /* Task 6 */ }
     public function handleDailyCron(HookEvent $event) { /* Task 7 */ }
 
