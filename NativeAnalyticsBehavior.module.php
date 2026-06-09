@@ -152,7 +152,57 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     protected function maybeHandleCollect() { /* Task 6 */ }
     public function handleDailyCron(HookEvent $event) { /* Task 7 */ }
 
-    public function getModuleConfigInputfields(array $data) { /* Task 3 */ return new InputfieldWrapper(); }
+    public function getModuleConfigInputfields(array $data) {
+        $modules = $this->wire('modules');
+        $data = array_merge($this->defaults, $data);
+        $wrap = new InputfieldWrapper();
+
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = 'enabled';
+        $f->label = 'Enable behavior tracking';
+        $f->attr('checked', !empty($data['enabled']));
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = 'enableHeatmaps';
+        $f->label = 'Enable heatmaps (click + scroll)';
+        $f->attr('checked', !empty($data['enableHeatmaps']));
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = 'sampleRate';
+        $f->label = 'Sample rate (% of pageloads collected)';
+        $f->min = 1; $f->max = 100;
+        $f->value = (int) $data['sampleRate'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = 'retentionDays';
+        $f->label = 'Retention (days) — raw events older than this are purged daily';
+        $f->min = 1; $f->max = 730;
+        $f->value = (int) $data['retentionDays'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldTextarea');
+        $f->name = 'excludedPaths';
+        $f->label = 'Excluded path prefixes (one per line)';
+        $f->value = (string) $data['excludedPaths'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldTextarea');
+        $f->name = 'excludedTemplates';
+        $f->label = 'Excluded templates (one per line)';
+        $f->value = (string) $data['excludedTemplates'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldTextarea');
+        $f->name = 'blockedIps';
+        $f->label = 'Blocked IPs (one per line)';
+        $f->value = (string) $data['blockedIps'];
+        $wrap->add($f);
+
+        return $wrap;
+    }
 
     public function ___install() {}
     public function ___uninstall() {
