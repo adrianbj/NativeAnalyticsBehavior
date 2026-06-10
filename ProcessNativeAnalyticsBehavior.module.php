@@ -93,9 +93,22 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $to = date('Y-m-d');
             $from = date('Y-m-d', strtotime('-' . $preset . ' days'));
         }
+        // Device event counts drive both the dropdown labels and the fallback below.
+        $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
         // No explicit device: open on the device with the most clicks for this page.
         $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile'])
             ?: $this->core->getDefaultDevice($path, $from, $to);
+        // A device chosen on a previous page carries over in the URL and may have no
+        // data here. If the selected device is empty but another has events, switch
+        // to whichever has the most so we never open on an empty view.
+        if((int) ($deviceCounts[$device] ?? 0) === 0) {
+            $best = ''; $bestCount = 0;
+            foreach(['desktop', 'tablet', 'mobile'] as $v) {
+                $c = (int) ($deviceCounts[$v] ?? 0);
+                if($c > $bestCount) { $bestCount = $c; $best = $v; }
+            }
+            if($best !== '') $device = $best;
+        }
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
@@ -105,7 +118,6 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $snapshot = $this->core->getSnapshot($path, $device);
 
         // Controls form
-        $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
         $deviceOpts = '';
         foreach(['desktop' => 'Desktop', 'tablet' => 'Tablet', 'mobile' => 'Mobile'] as $v => $label) {
             $count = (int) ($deviceCounts[$v] ?? 0);
