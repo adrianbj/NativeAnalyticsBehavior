@@ -11,7 +11,7 @@
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
 .nab-snapshot-meta { font-size: .85em; color: #555; margin: .5em 0; }
 .nab-snapshot-meta #nab-unmatched { color: #BC5620; }
-#nab-legend { display: inline-flex; align-items: center; gap: .4em; margin-left: 1em; vertical-align: middle; }
+#nab-legend { display: inline-flex; align-items: center; gap: .4em; vertical-align: middle; }
 #nab-legend .nab-legend-bar { display: inline-block; width: 120px; height: 10px; border-radius: 5px; background: linear-gradient(to right, rgb(40,90,200), rgb(0,170,200), rgb(40,180,60), rgb(240,190,30), rgb(220,40,30)); }
 #nab-legend .nab-legend-lo, #nab-legend .nab-legend-hi { color: #555; }
 .nab-presets { display: inline-flex; gap: .3em; }

@@ -133,8 +133,8 @@
     // caption and end labels in sync with the active mode: per-element click
     // counts (1..max) for outlines, or a relative Low..High ramp for density.
     function renderLegend(maxC) {
-      var meta = document.querySelector(".nab-snapshot-meta");
-      if (!meta) return;
+      var controls = document.querySelector(".nab-stage-controls");
+      if (!controls) return;
       var legend = document.getElementById("nab-legend");
       if (!legend) {
         legend = document.createElement("span");
@@ -151,7 +151,7 @@
         legend.appendChild(lo);
         legend.appendChild(bar);
         legend.appendChild(hi);
-        meta.appendChild(legend);
+        controls.appendChild(legend);
       }
       var capEl = legend.querySelector(".nab-legend-cap");
       var loEl = legend.querySelector(".nab-legend-lo");
