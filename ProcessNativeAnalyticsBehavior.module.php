@@ -31,6 +31,15 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // URL, so a double call is harmless).
     protected function addAssets() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        // Load NativeAnalytics' dashboard CSS first so the shared pwna-* toolbar
+        // and panel styling is present on our standalone page too. When this view
+        // is embedded as a tab in the NativeAnalytics dashboard that stylesheet is
+        // already on the page; styles->add dedupes by URL, so the extra call is a
+        // no-op there. Our own admin.css layers the backdrop/heatmap styles on top.
+        $na = $this->wire('modules')->get('NativeAnalytics');
+        if($na) {
+            $this->wire('config')->styles->add($na->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($na->getAssetVersion('assets/admin.css')));
+        }
         $this->wire('config')->styles->add($this->core->getVersionedAssetUrl('assets/admin.css'));
         $this->wire('config')->scripts->add($this->core->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js'));
     }
@@ -85,13 +94,22 @@ class ProcessNativeAnalyticsBehavior extends Process {
             }
         }
         if(!$path) $path = $paths[0] ?? '/';
-        $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
-        $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-30 days'));
-        // A range preset button (7/30/90 days) overrides the date inputs.
-        $preset = (int) $input->get('preset');
-        if(in_array($preset, [7, 30, 90], true)) {
+        // Quick range is the base period (mirrors NativeAnalytics' toolbar): an
+        // explicit From and/or To overrides it. The date inputs stay empty while a
+        // quick range drives the view, so the dropdown reads as the active control.
+        $rangeOpts = ['7d' => 'Last 7 days', '30d' => 'Last 30 days', '90d' => 'Last 90 days'];
+        $range = (string) $input->get('range');
+        if(!isset($rangeOpts[$range])) $range = '30d';
+        $rangeDays = ['7d' => 7, '30d' => 30, '90d' => 90][$range];
+        $fromInput = $sanitizer->date($input->get('from'), 'Y-m-d') ?: '';
+        $toInput = $sanitizer->date($input->get('to'), 'Y-m-d') ?: '';
+        $custom = ($fromInput !== '' || $toInput !== '');
+        if($custom) {
+            $to = $toInput ?: date('Y-m-d');
+            $from = $fromInput ?: date('Y-m-d', strtotime('-' . ($rangeDays - 1) . ' days'));
+        } else {
             $to = date('Y-m-d');
-            $from = date('Y-m-d', strtotime('-' . $preset . ' days'));
+            $from = date('Y-m-d', strtotime('-' . ($rangeDays - 1) . ' days'));
         }
         // Device event counts drive both the dropdown labels and the fallback below.
         $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
@@ -142,23 +160,30 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';
         }
 
-        $out  = '<form method="get" class="nab-controls">';
+        $rangeOptsHtml = '';
+        foreach($rangeOpts as $v => $label) {
+            $rangeOptsHtml .= '<option value="' . $v . '"' . ($v === $range ? ' selected' : '') . '>' . $label . '</option>';
+        }
+
+        // Toolbar mirrors the NativeAnalytics dashboard tabs: pwna-toolbar panel
+        // with the quick-range/period control first, then From/To, then the
+        // page/device filters. Date inputs are blank while a quick range drives the
+        // view (an explicit date overrides the range — see the date logic above).
+        $out  = '<form method="get" class="pwna-toolbar pwna-panel pwna-toolbar-panel">';
         // Lets the server detect a page change on submit, so the device resets to
         // the one with the most results for the newly chosen page.
         $out .= '<input type="hidden" name="prev_path" value="' . $sanitizer->entities($path) . '">';
-        $out .= '<label class="uk-form-label">Top pages <select class="uk-select uk-form-width-medium" data-nab-toppages>' . $topOpts . '</select></label> ';
-        $out .= '<label class="uk-form-label nab-pathfind">Page search '
-            . '<input type="text" name="path" autocomplete="off" class="uk-input uk-form-width-medium" placeholder="Search tracked paths" value="' . $sanitizer->entities($path) . '" data-nab-pathsearch="1">'
-            . '<div class="nab-pathfind-results" data-nab-pathsearch-results hidden></div></label> ';
-        $out .= '<label class="uk-form-label">Device <select name="device" class="uk-select uk-form-width-small">' . $deviceOpts . '</select></label> ';
-        $out .= '<label class="uk-form-label">From <input type="date" name="from" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($from) . '"></label> ';
-        $out .= '<label class="uk-form-label">To <input type="date" name="to" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($to) . '"></label> ';
-        $out .= '<button type="submit" class="uk-button uk-button-primary">Apply</button>';
-        $out .= '<span class="nab-presets">'
-            . '<button type="submit" name="preset" value="7" class="uk-button uk-button-default uk-button-small">7d</button>'
-            . '<button type="submit" name="preset" value="30" class="uk-button uk-button-default uk-button-small">30d</button>'
-            . '<button type="submit" name="preset" value="90" class="uk-button uk-button-default uk-button-small">90d</button>'
-            . '</span>';
+        $out .= '<div class="pwna-toolbar-main"><div class="pwna-toolbar-left">';
+        $out .= '<label>Quick range <select name="range">' . $rangeOptsHtml . '</select></label>';
+        $out .= '<label>From <input type="date" name="from" value="' . $sanitizer->entities($fromInput) . '"></label>';
+        $out .= '<label>To <input type="date" name="to" value="' . $sanitizer->entities($toInput) . '"></label>';
+        $out .= '<label>Device <select name="device">' . $deviceOpts . '</select></label>';
+        $out .= '<label>Top pages <select data-nab-toppages>' . $topOpts . '</select></label>';
+        $out .= '<label class="pwna-pagefind nab-pathfind">Find page '
+            . '<input type="text" name="path" autocomplete="off" placeholder="Search tracked paths" value="' . $sanitizer->entities($path) . '" data-nab-pathsearch="1">'
+            . '<div class="nab-pathfind-results" data-nab-pathsearch-results hidden></div></label>';
+        $out .= '<button class="ui-button" type="submit">Apply</button>';
+        $out .= '</div></div>';
         $out .= '</form>';
 
         // Wire up the path autocomplete. Resolve the Behavior process page URL
@@ -207,12 +232,12 @@ class ProcessNativeAnalyticsBehavior extends Process {
         // (dead/rage clicks) stacked above the scroll-reach table, which is built
         // client-side by heatmap.js (it needs the laid-out backdrop to locate
         // each heading/form), so its container is just a placeholder.
-        $out .= '<div class="nab-tables">';
+        $out .= '<div class="pwna-grid-2">';
 
-        $out .= '<div class="nab-tables-col">';
+        $out .= '<div class="pwna-panel">';
         if($clicks) {
             $out .= '<h3 class="nab-frust-title">Most clicked</h3>';
-            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($clicks, 0, 20) as $c) {
                 $label = trim((string) ($c['label'] ?? ''));
@@ -222,11 +247,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 $out .= '<tr><td>' . $cell . '</td>'
                     . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
             }
-            $out .= '</tbody></table>';
+            $out .= '</tbody></table></div>';
         }
         if($copies) {
             $out .= '<h3 class="nab-frust-title">Most copied</h3>';
-            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Copies</th></tr></thead><tbody>';
             foreach(array_slice($copies, 0, 20) as $c) {
                 $label = trim((string) ($c['label'] ?? ''));
@@ -236,11 +261,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 $out .= '<tr><td>' . $cell . '</td>'
                     . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
             }
-            $out .= '</tbody></table>';
+            $out .= '</tbody></table></div>';
         }
         $out .= '</div>';
 
-        $out .= '<div class="nab-tables-col">';
+        $out .= '<div class="pwna-panel">';
         // Frustration signals: dead clicks (on non-interactive elements) and rage
         // clicks (rapid repeated taps in one spot). Only shown when present so the
         // dashboard stays quiet on healthy pages.
@@ -253,17 +278,19 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $out .= '</div>';
 
+        $out .= '<div class="pwna-panel">';
         $out .= '<div class="nab-stage-controls">';
         $out .= '<span class="nab-mode" role="group" aria-label="Heatmap view">';
-        $out .= '<button type="button" class="nab-mode-btn uk-button uk-button-default uk-button-small" data-mode="outlines" aria-pressed="true">Element outlines</button>';
-        $out .= '<button type="button" class="nab-mode-btn uk-button uk-button-default uk-button-small" data-mode="density" aria-pressed="false">Click density</button>';
+        $out .= '<button type="button" class="nab-mode-btn ui-button" data-mode="outlines" aria-pressed="true">Element outlines</button>';
+        $out .= '<button type="button" class="nab-mode-btn ui-button" data-mode="density" aria-pressed="false">Click density</button>';
         $out .= '</span>';
-        $out .= '<button type="button" id="nab-toggle-heat" class="uk-button uk-button-default uk-button-small" aria-pressed="true">Hide heatmap</button>';
+        $out .= '<button type="button" id="nab-toggle-heat" class="ui-button" aria-pressed="true">Hide heatmap</button>';
         $out .= '</div>';
 
         $out .= '<div class="nab-stage">';
         $out .= '<iframe id="nab-frame" sandbox="allow-same-origin"></iframe>';
         $out .= '<canvas id="nab-canvas"></canvas>';
+        $out .= '</div>';
         $out .= '</div>';
 
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
@@ -286,7 +313,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($title) . '</h3>';
         $out .= '<p class="nab-frust-sub">' . $sanitizer->entities($subtitle) . '</p>';
         if($rows) {
-            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($rows, 0, 20) as $r) {
                 $label = trim((string) ($r['label'] ?? ''));
@@ -296,7 +323,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 $out .= '<tr><td>' . $cell . '</td>'
                     . '<td class="nab-click-num">' . (int) $r['c'] . '</td></tr>';
             }
-            $out .= '</tbody></table>';
+            $out .= '</tbody></table></div>';
         } else {
             $out .= '<p class="nab-frust-none">None detected.</p>';
         }

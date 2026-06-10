@@ -529,7 +529,7 @@
       container.innerHTML = "";
       if (!rows.length) return;
       var table = document.createElement("table");
-      table.className = "nab-click-table uk-table uk-table-small uk-table-divider";
+      table.className = "pwna-table nab-click-table";
       var thead = document.createElement("thead");
       thead.innerHTML = "<tr><th>Section reach</th><th class=\"nab-click-num\">Seen by</th></tr>";
       table.appendChild(thead);

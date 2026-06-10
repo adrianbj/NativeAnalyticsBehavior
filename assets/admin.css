@@ -1,11 +1,10 @@
-.nab-controls { margin: 1em 0; display: flex; gap: 1em; flex-wrap: wrap; align-items: end; }
-.nab-controls label { display: flex; flex-direction: column; font-size: .85em; }
 .nab-stage-controls { margin: 0 0 .5em; display: flex; gap: 1em; align-items: center; }
-.nab-mode { display: inline-flex; }
-.nab-mode .nab-mode-btn { border-radius: 0; }
-.nab-mode .nab-mode-btn:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
-.nab-mode .nab-mode-btn:last-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; margin-left: -1px; }
-.nab-mode .nab-mode-btn[aria-pressed="true"] { background: #0C7896 !important; color: #fff !important; border-color: #0C7896 !important; }
+.nab-mode { display: inline-flex; gap: .5em; }
+/* Keep the theme's own button radius (don't fight ui-button's hover state);
+   the active view is marked by colour, not a segmented join. */
+.nab-mode .nab-mode-btn[aria-pressed="true"],
+.nab-mode .nab-mode-btn[aria-pressed="true"]:hover,
+.nab-mode .nab-mode-btn[aria-pressed="true"]:focus { background: #0C7896 !important; color: #fff !important; border-color: #0C7896 !important; }
 .nab-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
 .nab-stage #nab-frame { height: 75vh; border: 0; display: block; background: #fff; }
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
@@ -14,14 +13,12 @@
 #nab-legend { display: inline-flex; align-items: center; gap: .4em; vertical-align: middle; }
 #nab-legend .nab-legend-bar { display: inline-block; width: 120px; height: 10px; border-radius: 5px; background: linear-gradient(to right, rgb(40,90,200), rgb(0,170,200), rgb(40,180,60), rgb(240,190,30), rgb(220,40,30)); }
 #nab-legend .nab-legend-lo, #nab-legend .nab-legend-hi { color: #555; }
-.nab-presets { display: inline-flex; gap: .3em; }
-.nab-tables { display: flex; gap: 1.5em; flex-wrap: wrap; margin: 1.5em 0; }
-.nab-tables-col { flex: 1 1 0; min-width: 280px; }
-.nab-click-table { margin: 0; border: 1px solid #e5e5e5; }
-.nab-click-table thead th { background: #f5f5f5; }
+/* The base table look (row borders, muted uppercase headers) comes from
+   NativeAnalytics' .pwna-table; .nab-click-table only adds the column helpers. */
+.nab-click-table { margin: 0; }
 /* Stacked left-column tables (Most clicked / Most copied) sit flush otherwise;
    space the second table's heading off the first table. */
-.nab-click-table + .nab-frust-title { margin-top: 1.5em; }
+.pwna-table-wrap + .nab-frust-title { margin-top: 1.5em; }
 .nab-click-table .nab-click-label { display: block; }
 .nab-click-table .nab-click-sel { display: block; word-break: break-all; font-size: .8em; color: #888; }
 .nab-click-table .nab-click-num { text-align: right; white-space: nowrap; width: 6em; }
