@@ -129,7 +129,7 @@
   // --- human-readable label for a click target, for the dashboard table ---
   // The structural selector is unreadable ("ul.uk-accordion > li > a:nth-child"),
   // so capture the control's visible meaning. Skip masked/blocked subtrees so we
-  // never lift PII text off this platform; the dashboard falls back to the
+  // never lift PII text off the page; the dashboard falls back to the
   // selector when the label is empty.
   // Visible text only: clone and drop <style>/<script>/<svg> first, since
   // textContent otherwise concatenates CSS from inline SVG icons (e.g. UIKit's
@@ -168,8 +168,8 @@
   // A control's `value` is only a safe label for button-like inputs, where it's
   // the caption (e.g. <input type="submit" value="Login">). For text-entry
   // fields `value` is the user's data — a phone number, email, name — which must
-  // never be captured on this platform; pre-filled account forms carry it
-  // in the attribute, so the rest of the chain must fall through to "" instead.
+  // never be captured; pre-filled forms carry it in the attribute, so the rest
+  // of the chain must fall through to "" instead.
   function buttonValue(el) {
     if (el.nodeName.toLowerCase() !== "input") return "";
     var t = (el.getAttribute("type") || "").toLowerCase();

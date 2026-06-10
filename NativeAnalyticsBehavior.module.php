@@ -18,6 +18,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         'retentionDays' => 60,
         'excludedPaths' => '',    // newline-separated path prefixes
         'excludedTemplates' => '', // newline-separated template names
+        'excludedRoles' => '',    // newline-separated role names (superuser always excluded)
         'blockedIps' => '',       // newline-separated IPs
         'excludeNaBots' => 1,     // hide sessions NativeAnalytics flagged as bots
     ];
@@ -194,8 +195,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Server-trusted "page modified" timestamp for a captured path, used to gate
      * snapshot overwrites without trusting the client. The /nab-snapshot endpoint
      * is public, so the posted pageModified can't be believed: resolve the path to
-     * a real page and read its own modified time instead. URL-segment / segment
-     * paths don't resolve via get(), so they return null (caller falls back to an
+     * a real page and read its own modified time instead. URL-segment paths
+     * don't resolve via get(), so they return null (caller falls back to an
      * age-only freshness check). Returns 'Y-m-d H:i:s' or null.
      */
     protected function pageModifiedForPath($path) {
@@ -299,11 +300,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     protected function shouldInjectCurrentRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) return false;
         if($this->wire('config')->ajax) return false;
-        // Never track staff/superuser sessions: their admin and testing browsing
-        // would pollute the data and cause confusion. Subscribers (role 'user')
-        // and guests are tracked normally.
+        // Never track superusers: their admin and testing browsing would pollute
+        // the data and cause confusion. Additional roles can be excluded via the
+        // "Excluded roles" setting (e.g. staff/editors); everyone else — including
+        // guests and ordinary logged-in members — is tracked normally.
         $u = $this->wire('user');
-        if($u->isSuperuser() || $u->hasRole('editor')) return false;
+        if($u->isSuperuser() || $this->userHasExcludedRole($u)) return false;
         $page = $this->wire('page');
         if(!$page || !$page->id) return false;
         if($this->isExcludedTemplate($page)) return false;
@@ -320,6 +322,15 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             if($line !== '') $out[] = $line;
         }
         return $out;
+    }
+
+    protected function userHasExcludedRole(User $u) {
+        $roles = $this->configLines('excludedRoles');
+        if(!$roles) return false;
+        foreach($roles as $role) {
+            if($u->hasRole($role)) return true;
+        }
+        return false;
     }
 
     protected function isExcludedTemplate(Page $page) {
@@ -618,7 +629,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         // The freshness marker can't be taken from the client: a forged future
         // value would pin a spoofed snapshot as permanently "fresh". When the path
         // resolves to a real page, use that page's modified time; otherwise (URL
-        // segment / segment paths) accept the posted value but never a future one.
+        // segment paths) accept the posted value but never a future one.
         $now = date('Y-m-d H:i:s');
         $capturedModified = $this->pageModifiedForPath($path);
         if($capturedModified === null) {
@@ -980,9 +991,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Sessions that interacted with $path within [$from,$to], most-recently
      * active first. The page-and-range filter selects na_session_hashes from
      * nab_events (NOT pwna_hits): nab_events keys on the full path including URL
-     * segments, so segment landing pages like /products/sale are distinguishable,
-     * whereas pwna_hits collapses them to the canonical page (/sign-up/) and so
-     * can't isolate a single segment. The outer aggregate still reports each
+     * segments, so landing pages like /products/sale are distinguishable,
+     * whereas pwna_hits collapses them to the canonical page (/products/) and so
+     * can't isolate a single segment variant. The outer aggregate still reports each
      * qualifying session's FULL stats (start time, distinct page count, device)
      * from pwna_hits across all its hits, joined on the shared session_hash, so
      * the list row reflects the whole visit even if it began before $from.
@@ -1105,7 +1116,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * first-visit order: per-visit interaction attribution is impossible from
      * aggregate nab_events (clicks are stored per path_hash, not per pageview),
      * so a revisited path appears once with its time_on_page summed and its
-     * visit_count noted. Canonical pages that the session reached via a segment URL
+     * visit_count noted. Canonical pages that the session reached via a URL
      * segment are specialized back to the per-segment path (see below) so the rail,
      * its backdrop, and its interaction count match the page the visitor saw.
      * Returns null for a malformed hash, when NA's hits table is absent, or when
@@ -1171,8 +1182,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
 
         // Distinct full paths (any event type) this session touched. pwna_hits
-        // collapses segment URL segments to the canonical page, so a /products/sale
-        // visit is keyed '/sign-up/' in $pageRows but '/products/sale' here. We use
+        // collapses URL segments to the canonical page, so a /products/sale
+        // visit is keyed '/products/' in $pageRows but '/products/sale' here. We use
         // these to "specialize" each canonical rail page back to the segment variant
         // the session actually saw, so the rail path, its backdrop, and its
         // interaction count all key on the per-segment path_hash (matching the
@@ -1339,6 +1350,13 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $f->name = 'excludedTemplates';
         $f->label = 'Excluded templates (one per line)';
         $f->value = (string) $data['excludedTemplates'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldTextarea');
+        $f->name = 'excludedRoles';
+        $f->label = 'Excluded roles (one per line)';
+        $f->description = 'Sessions from users with any of these roles are never tracked. Superusers are always excluded regardless of this list.';
+        $f->value = (string) $data['excludedRoles'];
         $wrap->add($f);
 
         $f = $modules->get('InputfieldTextarea');

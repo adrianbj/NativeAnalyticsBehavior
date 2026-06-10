@@ -6,7 +6,7 @@ Behavioral analytics companion for the [NativeAnalytics](https://github.com/adri
 - Client collector captures click positions (no page text) and scroll depth.
 - Self-contained ingest endpoint at `/nab-collect`.
 - Click + scroll-depth heatmaps per page and device, in **Setup > Behavior**.
-- Configurable sampling rate, retention window, and path/template/IP exclusions.
+- Configurable sampling rate, retention window, and path/template/role/IP exclusions (superusers are always excluded).
 - Daily retention purge via LazyCron.
 
 Planned later phases: behavior insights (rage/dead clicks, quick-backs, JS errors), then full session recordings (rrweb), then segments + funnels.
