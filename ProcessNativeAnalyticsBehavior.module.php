@@ -168,21 +168,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         if(!$snapshot) {
-            $devCount = (int) ($deviceCounts[$device] ?? 0);
-            $msg = 'No snapshot captured yet for <strong>' . $sanitizer->entities($path)
+            $msg = 'No data captured yet for <strong>' . $sanitizer->entities($path)
                 . '</strong> (' . $sanitizer->entities($device) . ').';
-            if($devCount > 0) {
-                // Events and the backdrop snapshot are separate: a click is logged
-                // on first interaction, but the snapshot is only captured once the
-                // page fully loads. Spell that out so the device count above stops
-                // looking like it contradicts this message.
-                $msg .= ' ' . $devCount . ' ' . $sanitizer->entities($device) . ' '
-                    . ($devCount === 1 ? 'event is' : 'events are')
-                    . ' recorded — the snapshot is captured separately when the page finishes loading, so the '
-                    . ($devCount === 1 ? 'visitor' : 'visitors')
-                    . ' likely left before load (or the capture was blocked).';
-            }
-            $msg .= ' Visit that page as a logged-out visitor and let it finish loading to capture one, then reload this dashboard.';
             return $out . '<p>' . $msg . '</p>';
         }
 
