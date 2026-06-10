@@ -618,17 +618,18 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Pages with the most clicks, descending. Backs the dashboard's "top pages"
-     * quick-jump dropdown. Counts clicks only (not scroll events) and honors the
-     * bot-exclusion setting so the ranking matches the heatmaps.
+     * Pages with the most distinct sessions, descending. Backs the dashboard's
+     * "top pages" quick-jump dropdown. Counts unique session_hash values across
+     * all event types and honors the bot-exclusion setting so the ranking matches
+     * the heatmaps.
      *
      * @return array<int,array{path:string,c:int}>
      */
-    public function getTopClickedPages($limit = 25) {
+    public function getTopPagesBySessions($limit = 25) {
         $limit = max(1, min(100, (int) $limit));
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `path`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='click'" . $this->botExclusionSql() . "
+        $stmt = $db->prepare("SELECT `path`, COUNT(DISTINCT `session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `session_hash` <> ''" . $this->botExclusionSql() . "
             GROUP BY `path` ORDER BY c DESC LIMIT " . $limit);
         $stmt->execute();
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
