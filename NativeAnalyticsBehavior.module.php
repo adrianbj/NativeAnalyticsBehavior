@@ -721,6 +721,34 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $this->getFrustrationClicks('rage', $path, $device, $fromDate, $toDate);
     }
 
+    /**
+     * Raw click coordinates for a pixel-density heatmap. Returns up to $limit
+     * compact [x_frac, y_px, dh] triples (x_frac is 0..1000 of doc width; y_px /
+     * dh gives the vertical fraction), letting the overlay place each click on the
+     * backdrop regardless of the original page's dimensions. Each row is one
+     * click, so repeated clicks naturally weight the density.
+     */
+    public function getClickCoordinates($path, $device, $fromDate, $toDate, $limit = 5000) {
+        $db = $this->wire('database');
+        $limit = max(1, min(20000, (int) $limit));
+        $sql = "SELECT `x_frac`, `y_px`, `dh` FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `dh` > 0
+            ORDER BY `id` DESC LIMIT $limit";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        $out = [];
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+            $out[] = [(int) $r['x_frac'], (int) $r['y_px'], (int) $r['dh']];
+        }
+        return $out;
+    }
+
     public function getModuleConfigInputfields(array $data) {
         $modules = $this->wire('modules');
         $data = array_merge($this->defaults, $data);

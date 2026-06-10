@@ -20,7 +20,9 @@
 
     var clicks = data.clicks || [];
     var scroll = data.scroll || [];
+    var coords = data.coords || [];
     var captureWidth = parseInt(data.captureWidth, 10) || 1280;
+    var heatMode = "outlines";
 
     function rebuildInto(doc) {
       try {
@@ -107,8 +109,9 @@
       ];
     }
 
-    // Build the click-volume legend once (a gradient bar mirroring HEAT_STOPS)
-    // and keep its high-end label in sync with the current max click count.
+    // Build the legend once (a gradient bar mirroring HEAT_STOPS) and keep its
+    // caption and end labels in sync with the active mode: per-element click
+    // counts (1..max) for outlines, or a relative Low..High ramp for density.
     function renderLegend(maxC) {
       var meta = document.querySelector(".nab-snapshot-meta");
       if (!meta) return;
@@ -116,21 +119,32 @@
       if (!legend) {
         legend = document.createElement("span");
         legend.id = "nab-legend";
+        var cap = document.createElement("span");
+        cap.className = "nab-legend-cap";
         var lo = document.createElement("span");
         lo.className = "nab-legend-lo";
-        lo.textContent = "1";
         var bar = document.createElement("span");
         bar.className = "nab-legend-bar";
         var hi = document.createElement("span");
         hi.className = "nab-legend-hi";
-        legend.appendChild(document.createTextNode("Clicks per element "));
+        legend.appendChild(cap);
         legend.appendChild(lo);
         legend.appendChild(bar);
         legend.appendChild(hi);
         meta.appendChild(legend);
       }
-      var hiLabel = legend.querySelector(".nab-legend-hi");
-      if (hiLabel) hiLabel.textContent = String(maxC);
+      var capEl = legend.querySelector(".nab-legend-cap");
+      var loEl = legend.querySelector(".nab-legend-lo");
+      var hiEl = legend.querySelector(".nab-legend-hi");
+      if (heatMode === "density") {
+        if (capEl) capEl.textContent = "Click density ";
+        if (loEl) loEl.textContent = "Low";
+        if (hiEl) hiEl.textContent = "High";
+      } else {
+        if (capEl) capEl.textContent = "Clicks per element ";
+        if (loEl) loEl.textContent = "1";
+        if (hiEl) hiEl.textContent = String(maxC);
+      }
     }
 
     // The heat layer is the parent-level #nab-canvas, a sibling of the iframe in
@@ -162,6 +176,15 @@
       var cr = canvas.getBoundingClientRect();
       var ox = fr.left - cr.left;
       var oy = fr.top - cr.top;
+
+      if (heatMode === "density") {
+        drawDensity(ctx, w, h, ox, oy);
+        drawScrollLines(ctx, w, h, oy);
+        renderLegend(null);
+        var dstatus = document.getElementById("nab-unmatched");
+        if (dstatus) dstatus.textContent = "";
+        return;
+      }
 
       drawScrollShade(ctx, w, h, oy);
 
@@ -233,6 +256,80 @@
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
       ctx.restore();
+    }
+
+    // A 256-entry lookup of the HEAT_STOPS ramp, built once. Maps a normalized
+    // density (0..1) to an [r,g,b] without recomputing the interpolation per pixel.
+    var PALETTE = null;
+    function buildPalette() {
+      var pal = new Uint8Array(256 * 3);
+      for (var i = 0; i < 256; i++) {
+        var rgb = heatColor(i / 255);
+        pal[i * 3] = rgb[0];
+        pal[i * 3 + 1] = rgb[1];
+        pal[i * 3 + 2] = rgb[2];
+      }
+      return pal;
+    }
+
+    // Classic pixel-coordinate click-density heatmap. Each recorded click
+    // (x_frac 0..1000 across page width; y_px absolute, normalized by the page
+    // height at click time) maps to a document point, then to canvas space using
+    // the same depth/offset math as the scroll rules so it tracks the backdrop.
+    // Density is accumulated as stacked translucent blobs on an offscreen canvas,
+    // then recoloured per-pixel through the HEAT_STOPS palette and composited.
+    var DENSITY_RADIUS = 28;
+    var DENSITY_MAX_ALPHA = 0.85;
+    function drawDensity(ctx, w, h, ox, oy) {
+      if (!coords.length) return;
+      var doc = frameDoc();
+      if (!doc) return;
+      var root = doc.documentElement, body = doc.body;
+      var fullH = Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0);
+      var fullW = Math.max(root ? root.scrollWidth : 0, body ? body.scrollWidth : 0);
+      if (!fullH || !fullW) return;
+      var win = frame.contentWindow;
+      var sy = (win && win.pageYOffset) || (root && root.scrollTop) || 0;
+      var sx = (win && win.pageXOffset) || (root && root.scrollLeft) || 0;
+
+      var off = document.createElement("canvas");
+      off.width = w;
+      off.height = h;
+      var octx = off.getContext("2d");
+      var i, c, dh, x, y, g;
+      for (i = 0; i < coords.length; i++) {
+        c = coords[i];
+        dh = c[2] || 0;
+        if (dh <= 0) continue;
+        x = (c[0] / 1000) * fullW - sx + ox;
+        y = (c[1] / dh) * fullH - sy + oy;
+        if (x < -DENSITY_RADIUS || x > w + DENSITY_RADIUS) continue;
+        if (y < -DENSITY_RADIUS || y > h + DENSITY_RADIUS) continue;
+        g = octx.createRadialGradient(x, y, 0, x, y, DENSITY_RADIUS);
+        g.addColorStop(0, "rgba(0,0,0,0.18)");
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        octx.fillStyle = g;
+        octx.fillRect(x - DENSITY_RADIUS, y - DENSITY_RADIUS, DENSITY_RADIUS * 2, DENSITY_RADIUS * 2);
+      }
+
+      var img = octx.getImageData(0, 0, w, h);
+      var d = img.data, p, maxA = 0;
+      for (p = 3; p < d.length; p += 4) { if (d[p] > maxA) maxA = d[p]; }
+      if (maxA === 0) return;
+      if (!PALETTE) PALETTE = buildPalette();
+      for (p = 0; p < d.length; p += 4) {
+        var a = d[p + 3];
+        if (a === 0) continue;
+        var t = a / maxA;
+        if (t > 1) t = 1;
+        var idx = (t * 255) | 0;
+        d[p] = PALETTE[idx * 3];
+        d[p + 1] = PALETTE[idx * 3 + 1];
+        d[p + 2] = PALETTE[idx * 3 + 2];
+        d[p + 3] = Math.round(Math.min(1, t * 1.2) * DENSITY_MAX_ALPHA * 255);
+      }
+      octx.putImageData(img, 0, 0);
+      ctx.drawImage(off, 0, 0);
     }
 
     // Cumulative scroll-reach rules: a dashed line at each 10% of document depth
@@ -397,6 +494,25 @@
       });
     }
 
+    // Switch the overlay between element outlines and pixel click-density. Only
+    // one view is shown at a time; redraw immediately on change (even if the
+    // overlay is currently hidden, so the new mode is ready when shown).
+    function bindModeSwitch() {
+      var btns = document.querySelectorAll(".nab-mode-btn");
+      if (!btns.length) return;
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener("click", function () {
+          var mode = this.getAttribute("data-mode");
+          if (mode === heatMode) return;
+          heatMode = mode;
+          for (var k = 0; k < btns.length; k++) {
+            btns[k].setAttribute("aria-pressed", btns[k].getAttribute("data-mode") === heatMode ? "true" : "false");
+          }
+          drawHeat();
+        });
+      }
+    }
+
     function setup() {
       frame.style.width = captureWidth + "px";
       var doc = frameDoc();
@@ -405,6 +521,7 @@
       // Allow layout to settle before measuring element boxes, then redraw a
       // couple more times as images load and shift box positions.
       bindHeatToggle();
+      bindModeSwitch();
       setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);

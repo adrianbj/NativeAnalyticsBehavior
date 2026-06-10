@@ -1,6 +1,11 @@
 .nab-controls { margin: 1em 0; display: flex; gap: 1em; flex-wrap: wrap; align-items: end; }
 .nab-controls label { display: flex; flex-direction: column; font-size: .85em; }
-.nab-stage-controls { margin: 0 0 .5em; }
+.nab-stage-controls { margin: 0 0 .5em; display: flex; gap: 1em; align-items: center; }
+.nab-mode { display: inline-flex; }
+.nab-mode .nab-mode-btn { border-radius: 0; }
+.nab-mode .nab-mode-btn:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+.nab-mode .nab-mode-btn:last-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; margin-left: -1px; }
+.nab-mode .nab-mode-btn[aria-pressed="true"] { background: #0C7896 !important; color: #fff !important; border-color: #0C7896 !important; }
 .nab-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
 .nab-stage #nab-frame { height: 75vh; border: 0; display: block; background: #fff; }
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }

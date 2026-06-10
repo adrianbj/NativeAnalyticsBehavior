@@ -96,6 +96,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
+        $coords = $this->core->getClickCoordinates($path, $device, $from, $to);
         $deadClicks = $this->core->getDeadClicks($path, $device, $from, $to);
         $rageClicks = $this->core->getRageClicks($path, $device, $from, $to);
         $snapshot = $this->core->getSnapshot($path, $device);
@@ -148,6 +149,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $payload = json_encode([
             'clicks' => $clicks,
             'scroll' => $scroll,
+            'coords' => $coords,
             'captureWidth' => $snapshot['capture_width'],
         ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
@@ -200,6 +202,10 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '</div>';
 
         $out .= '<div class="nab-stage-controls">';
+        $out .= '<span class="nab-mode" role="group" aria-label="Heatmap view">';
+        $out .= '<button type="button" class="nab-mode-btn uk-button uk-button-default uk-button-small" data-mode="outlines" aria-pressed="true">Element outlines</button>';
+        $out .= '<button type="button" class="nab-mode-btn uk-button uk-button-default uk-button-small" data-mode="density" aria-pressed="false">Click density</button>';
+        $out .= '</span>';
         $out .= '<button type="button" id="nab-toggle-heat" class="uk-button uk-button-default uk-button-small" aria-pressed="true">Hide heatmap</button>';
         $out .= '</div>';
 
