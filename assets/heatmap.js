@@ -246,10 +246,16 @@
 
     // Scroll-fold shading: tint the backdrop progressively darker the fewer
     // sessions reached each depth, so the "fold" — where most visitors stopped —
-    // reads at a glance. Painted under the click outlines and scroll rules. The
-    // tint maps document depth to canvas Y (matching the dashed-line math), with
-    // a per-bucket alpha of (1 - cumulative reach) * MAX_ALPHA: the top everyone
-    // saw stays clear, the rarely-seen tail goes dark.
+    // reads at a glance. Painted under the click outlines and scroll rules, mapping
+    // document depth to canvas Y (matching the dashed-line math).
+    //
+    // The alpha is contrast-stretched across the OBSERVED reach range rather than a
+    // flat 0..100%: clear at the most-reached depth, full tint at the deepest depth
+    // anyone actually reached, and pinned dark below that. Real scroll curves are
+    // top-loaded (almost everyone sees the top, a steep drop, then a thin tail), so
+    // a flat ramp washes the drop-off zone into a smooth gradient. Spreading the
+    // alpha across [minReach, maxReach] puts the whole contrast budget where the
+    // reach actually varies, making the fold pop.
     var SHADE_MAX_ALPHA = 0.45;
     function drawScrollShade(ctx, w, h, oy) {
       var total = 0, j;
@@ -265,11 +271,24 @@
       var top = oy - sy;
       var bottom = fullH - sy + oy;
       if (bottom - top < 1) return;
-      var grad = ctx.createLinearGradient(0, top, 0, bottom);
-      for (var b = 0; b <= 10; b++) {
+      // Cumulative reach fraction at each stop, plus the observed range to stretch
+      // across. minReach ignores the artificial trailing zeros below the deepest
+      // reached bucket so those pin to full tint instead of skewing the range.
+      var reach = [], maxReach = 0, minReach = 1, b;
+      for (b = 0; b <= 10; b++) {
         var reached = 0;
         for (j = b; j < scroll.length; j++) reached += parseInt(scroll[j], 10) || 0;
-        var alpha = (1 - reached / total) * SHADE_MAX_ALPHA;
+        var r = reached / total;
+        reach.push(r);
+        if (r > maxReach) maxReach = r;
+        if (r > 0 && r < minReach) minReach = r;
+      }
+      var span = maxReach - minReach;
+      var grad = ctx.createLinearGradient(0, top, 0, bottom);
+      for (b = 0; b <= 10; b++) {
+        var t = span > 0 ? (maxReach - reach[b]) / span : (1 - reach[b]);
+        if (t < 0) t = 0; else if (t > 1) t = 1;
+        var alpha = t * SHADE_MAX_ALPHA;
         grad.addColorStop(b / 10, "rgba(20,30,55," + alpha.toFixed(3) + ")");
       }
       ctx.save();
