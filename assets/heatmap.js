@@ -18,11 +18,31 @@
     try { snap = JSON.parse(snapEl.textContent || "null"); } catch (e) { return; }
     if (!snap) return;
 
+    // The backdrop iframe is sandboxed without allow-scripts (deliberate — a
+    // replayed page must never run). Any <script> still present in the snapshot
+    // is created during rrweb's rebuild and the browser logs a blocked-execution
+    // error as it tries (then fails) to run it. The collector strips scripts at
+    // capture, but snapshots stored before that shipped still carry them, so
+    // strip them from the serialized tree here too — before rebuild, since the
+    // execution attempt happens as each node is built.
+    stripSnapshotScripts(snap);
+
     var clicks = data.clicks || [];
     var scroll = data.scroll || [];
     var coords = data.coords || [];
     var captureWidth = parseInt(data.captureWidth, 10) || 1280;
     var heatMode = "outlines";
+
+    // Recursively drop <script> element nodes from an rrweb-snapshot tree
+    // (NodeType 2 = Element). Mirrors the collector's capture-time strip so
+    // snapshots stored before that existed are also safe to rebuild.
+    function stripSnapshotScripts(n) {
+      if (!n || !n.childNodes || !n.childNodes.length) return;
+      n.childNodes = n.childNodes.filter(function (c) {
+        return !(c && c.type === 2 && c.tagName === "script");
+      });
+      for (var i = 0; i < n.childNodes.length; i++) stripSnapshotScripts(n.childNodes[i]);
+    }
 
     function rebuildInto(doc) {
       try {
@@ -534,7 +554,16 @@
       }
     }
 
-    setup();
+    // Building the backdrop writes the snapshot into the iframe, and the iframe's
+    // subresources (the page's responsive images) count toward THIS document's
+    // load event. Those images are captured with loading="lazy"/sizes="auto" and
+    // can hang or get canceled in the rebuilt doc, which leaves the browser tab
+    // spinner running forever. Defer the build until after the parent window has
+    // finished loading so the iframe's network activity can never hold the
+    // parent's load event open.
+    if (document.readyState === "complete") setup();
+    else window.addEventListener("load", setup);
+
     window.addEventListener("resize", drawHeat);
   });
 })();

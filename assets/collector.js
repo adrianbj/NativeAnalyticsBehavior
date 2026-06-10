@@ -22,6 +22,12 @@
   }
   if (dntActive() || !hasConsent()) return;
 
+  // Skip headless automation (Selenium, Playwright, headless Chrome, etc.),
+  // which sets navigator.webdriver. Catches the high-signal automated clients
+  // without a UA blocklist; it won't catch every bot, but it keeps obvious
+  // synthetic traffic out of the heatmaps.
+  if (navigator.webdriver === true) return;
+
   // --- sampling ---
   var rate = typeof cfg.sampleRate === "number" ? cfg.sampleRate : 100;
   if (rate < 100 && (Math.random() * 100) >= rate) return;
@@ -188,6 +194,17 @@
     return !(el.closest && el.closest(INTERACTIVE_SEL));
   }
 
+  // Third-party widgets inject their own chrome into the page (e.g.
+  // LiveHelperChat's status widget / chat box). Those nodes aren't part of the
+  // site, are late-injected so they never appear in the captured backdrop, and
+  // their real behaviour lives inside a cross-origin iframe we can't observe — so
+  // a click on them is meaningless noise that also gets mis-flagged as "dead".
+  // Drop such clicks entirely. Extend this list as new widgets are added.
+  var IGNORE_SEL = "[id^=\"lhc-\"], [id^=\"lhc_\"]";
+  function isIgnoredClick(el) {
+    return !!(el && el.closest && el.closest(IGNORE_SEL));
+  }
+
   // Rage click: 3+ clicks within 1s landing within ~30px of each other — a
   // classic frustration signal. Keep a tiny rolling buffer of recent clicks.
   var recentClicks = [];
@@ -216,6 +233,7 @@
   var lastSentScrollPct = -1;
 
   function recordClick(e) {
+    if (isIgnoredClick(e.target)) return;
     var dw = docWidth() || 1;
     var xFrac = Math.max(0, Math.min(1000, Math.round((e.pageX / dw) * 1000)));
     var target = resolveTarget(e.target);

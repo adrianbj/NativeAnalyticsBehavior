@@ -31,10 +31,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // URL, so a double call is harmless).
     protected function addAssets() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
-        $css = $this->core->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/admin.css'));
-        $this->wire('config')->styles->add($css);
-        $lib = $this->core->getAssetUrl('assets/vendor/rrweb-snapshot.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
-        $this->wire('config')->scripts->add($lib);
+        $this->wire('config')->styles->add($this->core->getVersionedAssetUrl('assets/admin.css'));
+        $this->wire('config')->scripts->add($this->core->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js'));
     }
 
     public function ___execute() {
@@ -68,6 +66,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $this->addAssets();
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
+        // CSP nonce for the executable <script> tags we emit (our policy is
+        // nonce-based for scripts; style/link tags and inert application/json
+        // data blocks never carry a nonce). Empty string when no nonce is set.
+        $nonce = $this->core->getCspNonce();
+        $nonceAttr = $nonce !== '' ? ' nonce="' . $sanitizer->entities($nonce) . '"' : '';
 
         $paths = $this->core->getTrackedPaths();
         // Prefer an explicit path; otherwise adopt the page selected in the main
@@ -133,8 +136,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if($procPage && $procPage->id) {
             $cfg = json_encode(['url' => $procPage->url . 'path-search/'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
             $out .= '<script type="application/json" id="nab-pathsearch-config">' . $cfg . '</script>';
-            $psJs = $this->core->getAssetUrl('assets/pathsearch.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/pathsearch.js'));
-            $out .= '<script src="' . $sanitizer->entities($psJs) . '" defer></script>';
+            $psJs = $this->core->getVersionedAssetUrl('assets/pathsearch.js');
+            $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($psJs) . '" defer></script>';
         }
 
         if(!$paths) {
@@ -142,8 +145,22 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         if(!$snapshot) {
-            return $out . '<p>No snapshot captured yet for <strong>' . $sanitizer->entities($path)
-                . '</strong> (' . $sanitizer->entities($device) . '). Visit that page as a logged-out visitor to capture one, then reload this dashboard.</p>';
+            $devCount = (int) ($deviceCounts[$device] ?? 0);
+            $msg = 'No snapshot captured yet for <strong>' . $sanitizer->entities($path)
+                . '</strong> (' . $sanitizer->entities($device) . ').';
+            if($devCount > 0) {
+                // Events and the backdrop snapshot are separate: a click is logged
+                // on first interaction, but the snapshot is only captured once the
+                // page fully loads. Spell that out so the device count above stops
+                // looking like it contradicts this message.
+                $msg .= ' ' . $devCount . ' ' . $sanitizer->entities($device) . ' '
+                    . ($devCount === 1 ? 'event is' : 'events are')
+                    . ' recorded — the snapshot is captured separately when the page finishes loading, so the '
+                    . ($devCount === 1 ? 'visitor' : 'visitors')
+                    . ' likely left before load (or the capture was blocked).';
+            }
+            $msg .= ' Visit that page as a logged-out visitor and let it finish loading to capture one, then reload this dashboard.';
+            return $out . '<p>' . $msg . '</p>';
         }
 
         $payload = json_encode([
@@ -217,8 +234,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
         $out .= '<script type="application/json" id="nab-snapshot">' . $snapshot['dom'] . '</script>';
 
-        $js = $this->core->getAssetUrl('assets/heatmap.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/heatmap.js'));
-        $out .= '<script src="' . $sanitizer->entities($js) . '" defer></script>';
+        $js = $this->core->getVersionedAssetUrl('assets/heatmap.js');
+        $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($js) . '" defer></script>';
 
         return $out;
     }

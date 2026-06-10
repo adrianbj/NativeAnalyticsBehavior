@@ -101,14 +101,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $this->wire('config')->urls->siteModules . $this->getModuleDirName() . '/' . ltrim($relativePath, '/');
     }
 
-    public function getAssetVersion($relativePath = '') {
-        $version = (string) self::VERSION;
+    // Filename-based cache busting that matches the site's versionAsset() format:
+    // assets/foo.js -> assets/foo.<mtime>.js. The site .htaccess rewrites the
+    // versioned name back to the real file, so the URL path (not a query string)
+    // changes when the file does. CloudFront keys on the path, so it busts
+    // properly — a ?v= query string would be dropped/ignored at the CDN. The
+    // mtime is a 10-digit timestamp, which the rewrite rule requires.
+    public function getVersionedAssetUrl($relativePath) {
         $relativePath = ltrim((string) $relativePath, '/');
-        if($relativePath !== '') {
-            $file = __DIR__ . '/' . $relativePath;
-            if(is_file($file)) $version .= '-' . filemtime($file);
-        }
-        return $version;
+        $url = $this->getAssetUrl($relativePath);
+        $file = __DIR__ . '/' . $relativePath;
+        if(!is_file($file)) return $url;
+        $ext = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
+        if($ext === '') return $url;
+        return preg_replace('/\.' . preg_quote($ext, '/') . '$/', '.' . filemtime($file) . '.' . $ext, $url);
     }
 
     public function getCspNonce() {
@@ -301,8 +307,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $reqPath = '/' . ltrim((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH), '/');
             $info = $this->snapshotFreshnessForPath($reqPath);
             $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
-            $payload['snapshotLib'] = $this->getAssetUrl('assets/vendor/rrweb-snapshot.js')
-                . '?v=' . rawurlencode($this->getAssetVersion('assets/vendor/rrweb-snapshot.js'));
+            $payload['snapshotLib'] = $this->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js');
             $payload['snapshotFresh'] = $info['fresh'];
             $payload['pageModified'] = $info['pageModified']; // string or null
         }
@@ -311,7 +316,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $configJson = json_encode($payload, $jsonFlags);
         if($configJson === false) return;
 
-        $scriptUrl = $this->getAssetUrl('assets/collector.js') . '?v=' . rawurlencode($this->getAssetVersion('assets/collector.js'));
+        $scriptUrl = $this->getVersionedAssetUrl('assets/collector.js');
         $nonceAttr = $this->getScriptNonceAttribute();
 
         $injected = "\n<script" . $nonceAttr . ">window.NAB_CONFIG = " . $configJson . ";</script>\n";
