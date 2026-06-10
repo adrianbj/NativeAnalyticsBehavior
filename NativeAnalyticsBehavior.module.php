@@ -267,6 +267,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     protected function shouldInjectCurrentRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) return false;
         if($this->wire('config')->ajax) return false;
+        // Never track staff/superuser sessions: their admin and testing browsing
+        // would pollute the data and cause confusion. Subscribers (role 'user')
+        // and guests are tracked normally.
+        $u = $this->wire('user');
+        if($u->isSuperuser() || $u->hasRole('editor')) return false;
         $page = $this->wire('page');
         if(!$page || !$page->id) return false;
         if($this->isExcludedTemplate($page)) return false;
@@ -313,17 +318,17 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             'heatmaps' => (bool) $this->enableHeatmaps,
         ];
 
-        if($this->wire('user')->isGuest()) {
-            // Match the client's window.location.pathname (full path incl. URL
-            // segments, site-root prefix) so the freshness check keys on the same
-            // path_hash that clicks and the stored snapshot will use.
-            $reqPath = '/' . ltrim((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH), '/');
-            $info = $this->snapshotFreshnessForPath($reqPath);
-            $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
-            $payload['snapshotLib'] = $this->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js');
-            $payload['snapshotFresh'] = $info['fresh'];
-            $payload['pageModified'] = $info['pageModified']; // string or null
-        }
+        // Snapshot capture runs for every tracked visitor — guests and logged-in
+        // subscribers alike (staff/superuser are already excluded upstream).
+        // Match the client's window.location.pathname (full path incl. URL
+        // segments, site-root prefix) so the freshness check keys on the same
+        // path_hash that clicks and the stored snapshot will use.
+        $reqPath = '/' . ltrim((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH), '/');
+        $info = $this->snapshotFreshnessForPath($reqPath);
+        $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
+        $payload['snapshotLib'] = $this->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js');
+        $payload['snapshotFresh'] = $info['fresh'];
+        $payload['pageModified'] = $info['pageModified']; // string or null
 
         $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         $configJson = json_encode($payload, $jsonFlags);
