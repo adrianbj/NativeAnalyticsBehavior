@@ -1,3 +1,7 @@
+/* The Top pages option labels (full paths) can be long; left unconstrained the
+   select grows and pushes Find page + Apply onto a second row. Cap it so the
+   toolbar stays on one line; the native select truncates overflowing labels. */
+.pwna-toolbar [data-nab-toppages] { width: 24em; max-width: 24em; }
 .nab-stage-controls { margin: 0 0 .5em; display: flex; gap: 1em; align-items: center; }
 .nab-mode { display: inline-flex; gap: .5em; }
 /* Keep the theme's own button radius (don't fight ui-button's hover state);
