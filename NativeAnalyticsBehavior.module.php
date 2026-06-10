@@ -314,7 +314,24 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     protected function configLines($key) {
-        $raw = (string) $this->get($key);
+        return $this->normalizeList($this->get($key));
+    }
+
+    /**
+     * Normalize a config value to a list of non-empty trimmed strings. Accepts an
+     * array (InputfieldAsmSelect) or a newline-separated string (InputfieldTextarea),
+     * so list settings read the same way regardless of input control.
+     */
+    protected function normalizeList($val) {
+        if(is_array($val)) {
+            $out = [];
+            foreach($val as $v) {
+                $v = trim((string) $v);
+                if($v !== '') $out[] = $v;
+            }
+            return $out;
+        }
+        $raw = (string) $val;
         if($raw === '') return [];
         $out = [];
         foreach(preg_split('/\r\n|\r|\n/', $raw) as $line) {
@@ -1346,17 +1363,26 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $f->value = (string) $data['excludedPaths'];
         $wrap->add($f);
 
-        $f = $modules->get('InputfieldTextarea');
+        $f = $modules->get('InputfieldAsmSelect');
         $f->name = 'excludedTemplates';
-        $f->label = 'Excluded templates (one per line)';
-        $f->value = (string) $data['excludedTemplates'];
+        $f->label = 'Excluded templates';
+        $f->description = 'Pages using any selected template are never tracked.';
+        foreach($this->wire('templates') as $t) {
+            if($t->flags & Template::flagSystem) continue;
+            $f->addOption($t->name, $t->name);
+        }
+        $f->value = $this->normalizeList($data['excludedTemplates']);
         $wrap->add($f);
 
-        $f = $modules->get('InputfieldTextarea');
+        $f = $modules->get('InputfieldAsmSelect');
         $f->name = 'excludedRoles';
-        $f->label = 'Excluded roles (one per line)';
-        $f->description = 'Sessions from users with any of these roles are never tracked. Superusers are always excluded regardless of this list.';
-        $f->value = (string) $data['excludedRoles'];
+        $f->label = 'Excluded roles';
+        $f->description = 'Sessions from users with any selected role are never tracked. Superusers are always excluded regardless of this list.';
+        foreach($this->wire('roles') as $role) {
+            if($role->name === 'guest' || $role->name === 'superuser') continue;
+            $f->addOption($role->name, $role->name);
+        }
+        $f->value = $this->normalizeList($data['excludedRoles']);
         $wrap->add($f);
 
         $f = $modules->get('InputfieldTextarea');
