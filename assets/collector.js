@@ -205,6 +205,22 @@
     return !(el.closest && el.closest(INTERACTIVE_SEL));
   }
 
+  // A click that resolves to a big non-interactive wrapper (e.g. the <ul> that
+  // holds every question in a form) is really empty space between fields, not a
+  // click on a single element. Recording it paints a page-sized heat box and
+  // lists the wrapper's whole concatenated text as one "element", so drop it.
+  // Small non-interactive targets are kept — a dead click on an icon or a line
+  // of text is a genuine frustration signal; only oversized containers are noise.
+  function isContainerClick(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.closest && el.closest(INTERACTIVE_SEL)) return false;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    var vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    if (!vh || !vw) return false;
+    var r = el.getBoundingClientRect();
+    return r.height > vh || (r.width * r.height) > (vw * vh * 0.5);
+  }
+
   // Third-party widgets inject their own chrome into the page (e.g.
   // LiveHelperChat's status widget / chat box). Those nodes aren't part of the
   // site, are late-injected so they never appear in the captured backdrop, and
@@ -257,6 +273,7 @@
     var dw = docWidth() || 1;
     var xFrac = Math.max(0, Math.min(1000, Math.round((e.pageX / dw) * 1000)));
     var target = resolveTarget(e.target);
+    if (isContainerClick(target)) return;
     var selecting = hasTextSelection();
     queue.push({
       type: "click",
