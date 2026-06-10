@@ -7,6 +7,23 @@
   }
 
   ready(function () {
+    // Top-pages quick-jump: on change, copy the chosen path into the Page field
+    // and submit the controls form so other filters (device/date) are preserved.
+    // Wired before the autocomplete's fetch/config gate so it works on its own.
+    var jumps = document.querySelectorAll("[data-nab-toppages]");
+    for (var m = 0; m < jumps.length; m++) initJump(jumps[m]);
+
+    function initJump(sel) {
+      sel.addEventListener("change", function () {
+        if (!sel.value) return;
+        var form = sel.closest("form");
+        if (!form) return;
+        var pathInput = form.querySelector("[name=\"path\"]");
+        if (pathInput) pathInput.value = sel.value;
+        form.submit();
+      });
+    }
+
     var cfgEl = document.getElementById("nab-pathsearch-config");
     if (!cfgEl || !window.fetch) return;
     var cfg;

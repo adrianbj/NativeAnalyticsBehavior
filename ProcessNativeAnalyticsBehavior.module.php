@@ -124,8 +124,19 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $deviceOpts .= '<option value="' . $v . '"' . ($v === $device ? ' selected' : '') . '>' . $label . ' (' . $count . ')</option>';
         }
 
+        // Top-pages quick-jump: the 25 most-clicked pages. JS navigates the form to
+        // the chosen page on change (see pathsearch.js). The current page is marked
+        // selected when it's in the list; otherwise the placeholder shows.
+        $topOpts = '<option value="">Top pages by clicks…</option>';
+        foreach($this->core->getTopClickedPages(25) as $tp) {
+            $tpPath = (string) $tp['path'];
+            $topOpts .= '<option value="' . $sanitizer->entities($tpPath) . '"' . ($tpPath === $path ? ' selected' : '') . '>'
+                . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';
+        }
+
         $out  = '<form method="get" class="nab-controls">';
-        $out .= '<label class="uk-form-label nab-pathfind">Page '
+        $out .= '<label class="uk-form-label">Top pages <select class="uk-select uk-form-width-medium" data-nab-toppages>' . $topOpts . '</select></label> ';
+        $out .= '<label class="uk-form-label nab-pathfind">Page search '
             . '<input type="text" name="path" autocomplete="off" class="uk-input uk-form-width-medium" placeholder="Search tracked paths" value="' . $sanitizer->entities($path) . '" data-nab-pathsearch="1">'
             . '<div class="nab-pathfind-results" data-nab-pathsearch-results hidden></div></label> ';
         $out .= '<label class="uk-form-label">Device <select name="device" class="uk-select uk-form-width-small">' . $deviceOpts . '</select></label> ';
