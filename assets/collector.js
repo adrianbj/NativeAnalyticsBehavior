@@ -174,6 +174,35 @@
     return txt.slice(0, 100);
   }
 
+  // A click is "dead" when nothing on the element (or its ancestors) makes it
+  // actionable — a sign a visitor expected a non-interactive thing (image,
+  // styled text, icon) to do something. Clicks on the bare page body/html are
+  // empty-area clicks, not frustration, so they don't count.
+  var INTERACTIVE_SEL = "a, button, input, select, textarea, label, summary, " +
+    "[role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], " +
+    "[role=radio], [onclick], [tabindex], [contenteditable]";
+  function isDeadClick(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var tag = el.nodeName.toLowerCase();
+    if (tag === "html" || tag === "body") return false;
+    return !(el.closest && el.closest(INTERACTIVE_SEL));
+  }
+
+  // Rage click: 3+ clicks within 1s landing within ~30px of each other — a
+  // classic frustration signal. Keep a tiny rolling buffer of recent clicks.
+  var recentClicks = [];
+  var RAGE_MS = 1000, RAGE_PX = 30, RAGE_MIN = 3;
+  function isRageClick(now, x, y) {
+    recentClicks.push({ t: now, x: x, y: y });
+    while (recentClicks.length && now - recentClicks[0].t > RAGE_MS) recentClicks.shift();
+    var near = 0;
+    for (var i = 0; i < recentClicks.length; i++) {
+      var dx = recentClicks[i].x - x, dy = recentClicks[i].y - y;
+      if (dx * dx + dy * dy <= RAGE_PX * RAGE_PX) near++;
+    }
+    return near >= RAGE_MIN;
+  }
+
   function docWidth() {
     return Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0, window.innerWidth || 0);
   }
@@ -200,6 +229,8 @@
       dh: Math.round(docHeight()),
       selector: cssSelector(e.target),
       label: clickLabel(target),
+      dead: isDeadClick(e.target) ? 1 : 0,
+      rage: isRageClick(Date.now(), e.pageX, e.pageY) ? 1 : 0,
       visitorId: visitorId,
       sessionId: sessionId
     });

@@ -163,6 +163,8 @@
       var ox = fr.left - cr.left;
       var oy = fr.top - cr.top;
 
+      drawScrollShade(ctx, w, h, oy);
+
       var maxC = 1, i;
       for (i = 0; i < clicks.length; i++) {
         var cc = parseInt(clicks[i].c, 10) || 0;
@@ -197,6 +199,40 @@
           ? unmatched + " click(s) not matched to the current layout (element absent or restructured)."
           : "";
       }
+    }
+
+    // Scroll-fold shading: tint the backdrop progressively darker the fewer
+    // sessions reached each depth, so the "fold" — where most visitors stopped —
+    // reads at a glance. Painted under the click outlines and scroll rules. The
+    // tint maps document depth to canvas Y (matching the dashed-line math), with
+    // a per-bucket alpha of (1 - cumulative reach) * MAX_ALPHA: the top everyone
+    // saw stays clear, the rarely-seen tail goes dark.
+    var SHADE_MAX_ALPHA = 0.45;
+    function drawScrollShade(ctx, w, h, oy) {
+      var total = 0, j;
+      for (j = 0; j < scroll.length; j++) total += parseInt(scroll[j], 10) || 0;
+      if (total === 0) return;
+      var doc = frameDoc();
+      if (!doc) return;
+      var root = doc.documentElement, body = doc.body;
+      var fullH = Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0);
+      if (!fullH) return;
+      var win = frame.contentWindow;
+      var sy = (win && win.pageYOffset) || (root && root.scrollTop) || 0;
+      var top = oy - sy;
+      var bottom = fullH - sy + oy;
+      if (bottom - top < 1) return;
+      var grad = ctx.createLinearGradient(0, top, 0, bottom);
+      for (var b = 0; b <= 10; b++) {
+        var reached = 0;
+        for (j = b; j < scroll.length; j++) reached += parseInt(scroll[j], 10) || 0;
+        var alpha = (1 - reached / total) * SHADE_MAX_ALPHA;
+        grad.addColorStop(b / 10, "rgba(20,30,55," + alpha.toFixed(3) + ")");
+      }
+      ctx.save();
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
     }
 
     // Cumulative scroll-reach rules: a dashed line at each 10% of document depth
@@ -347,6 +383,20 @@
       if (stage) stage.addEventListener("scroll", drawHeat, { passive: true });
     }
 
+    // Toggle the whole overlay (click outlines, scroll rules, fold shading) so the
+    // clean backdrop can be inspected. Hiding via display keeps the canvas drawn,
+    // so flipping it back on is instant with no redraw.
+    function bindHeatToggle() {
+      var btn = document.getElementById("nab-toggle-heat");
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        var on = canvas.style.display !== "none";
+        canvas.style.display = on ? "none" : "";
+        btn.setAttribute("aria-pressed", on ? "false" : "true");
+        btn.textContent = on ? "Show heatmap" : "Hide heatmap";
+      });
+    }
+
     function setup() {
       frame.style.width = captureWidth + "px";
       var doc = frameDoc();
@@ -354,6 +404,7 @@
       if (!rebuildInto(doc)) return;
       // Allow layout to settle before measuring element boxes, then redraw a
       // couple more times as images load and shift box positions.
+      bindHeatToggle();
       setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);

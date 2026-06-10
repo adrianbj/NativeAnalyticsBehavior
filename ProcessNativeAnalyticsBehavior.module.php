@@ -96,6 +96,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
+        $deadClicks = $this->core->getDeadClicks($path, $device, $from, $to);
+        $rageClicks = $this->core->getRageClicks($path, $device, $from, $to);
         $snapshot = $this->core->getSnapshot($path, $device);
 
         // Controls form
@@ -159,15 +161,17 @@ class ProcessNativeAnalyticsBehavior extends Process {
             . ' · ' . $scrollTotal . ' scroll ' . ($scrollTotal === 1 ? 'session' : 'sessions') . '.'
             . ' <span id="nab-unmatched"></span></p>';
 
-        // Two side-by-side tables complement the visual heatmap. The clicks
-        // table includes elements that don't resolve in the backdrop (the
-        // "unmatched" ones) which the overlay can't show. The scroll-reach table
-        // is built client-side by heatmap.js (it needs the laid-out backdrop to
-        // locate each heading/form), so the right column is just a placeholder.
+        // Two columns complement the visual heatmap. Left: the top-clicked
+        // elements (including ones that don't resolve in the backdrop — the
+        // "unmatched" overlay can't show those). Right: frustration signals
+        // (dead/rage clicks) stacked above the scroll-reach table, which is built
+        // client-side by heatmap.js (it needs the laid-out backdrop to locate
+        // each heading/form), so its container is just a placeholder.
         $out .= '<div class="nab-tables">';
 
         $out .= '<div class="nab-tables-col">';
         if($clicks) {
+            $out .= '<h3 class="nab-frust-title">Most clicked</h3>';
             $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($clicks, 0, 20) as $c) {
@@ -182,20 +186,63 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
         $out .= '</div>';
 
-        $out .= '<div class="nab-tables-col" id="nab-scroll-sections"></div>';
+        $out .= '<div class="nab-tables-col">';
+        // Frustration signals: dead clicks (on non-interactive elements) and rage
+        // clicks (rapid repeated taps in one spot). Only shown when present so the
+        // dashboard stays quiet on healthy pages.
+        if($deadClicks || $rageClicks) {
+            $out .= $this->renderFrustrationTable('Dead clicks', 'Clicks on elements that do nothing', $deadClicks, $sanitizer);
+            $out .= $this->renderFrustrationTable('Rage clicks', 'Rapid repeated clicks in one spot', $rageClicks, $sanitizer);
+        }
+        $out .= '<div id="nab-scroll-sections"></div>';
+        $out .= '</div>';
 
+        $out .= '</div>';
+
+        $out .= '<div class="nab-stage-controls">';
+        $out .= '<button type="button" id="nab-toggle-heat" class="uk-button uk-button-default uk-button-small" aria-pressed="true">Hide heatmap</button>';
         $out .= '</div>';
 
         $out .= '<div class="nab-stage">';
         $out .= '<iframe id="nab-frame" sandbox="allow-same-origin"></iframe>';
         $out .= '<canvas id="nab-canvas"></canvas>';
         $out .= '</div>';
+
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
         $out .= '<script type="application/json" id="nab-snapshot">' . $snapshot['dom'] . '</script>';
 
         $js = $this->core->getAssetUrl('assets/heatmap.js') . '?v=' . rawurlencode($this->core->getAssetVersion('assets/heatmap.js'));
         $out .= '<script src="' . $sanitizer->entities($js) . '" defer></script>';
 
+        return $out;
+    }
+
+    /**
+     * One frustration-signal section (dead or rage clicks), stacked in the right
+     * column above the scroll-reach table. $rows are selector/label/count rows
+     * from the core; the cell renders the readable label, falling back to the raw
+     * selector, and shows "None detected." when there are no rows.
+     */
+    protected function renderFrustrationTable($title, $subtitle, $rows, $sanitizer) {
+        $out = '<div class="nab-frust-section">';
+        $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($title) . '</h3>';
+        $out .= '<p class="nab-frust-sub">' . $sanitizer->entities($subtitle) . '</p>';
+        if($rows) {
+            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
+            foreach(array_slice($rows, 0, 20) as $r) {
+                $label = trim((string) ($r['label'] ?? ''));
+                $cell = $label !== ''
+                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
+                    : '<code class="nab-click-sel">' . $sanitizer->entities($r['selector']) . '</code>';
+                $out .= '<tr><td>' . $cell . '</td>'
+                    . '<td class="nab-click-num">' . (int) $r['c'] . '</td></tr>';
+            }
+            $out .= '</tbody></table>';
+        } else {
+            $out .= '<p class="nab-frust-none">None detected.</p>';
+        }
+        $out .= '</div>';
         return $out;
     }
 }

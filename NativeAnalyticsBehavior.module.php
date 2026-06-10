@@ -203,6 +203,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             `scroll_pct` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `selector` VARCHAR(255) NOT NULL DEFAULT '',
             `label` VARCHAR(255) NOT NULL DEFAULT '',
+            `dead` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `visitor_hash` CHAR(64) NOT NULL DEFAULT '',
             `session_hash` CHAR(64) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`),
@@ -230,6 +232,16 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'label'");
         if($col && $col->rowCount() === 0) {
             $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `label` VARCHAR(255) NOT NULL DEFAULT '' AFTER `selector`");
+        }
+        // `dead`/`rage` frustration flags shipped after labels, so add them
+        // idempotently on existing installs too.
+        $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'dead'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `dead` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `label`");
+        }
+        $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'rage'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `dead`");
         }
         $done = true;
     }
@@ -359,8 +371,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
 
         $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
-            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`visitor_hash`,`session_hash`)
-            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:visitor_hash,:session_hash)";
+            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`dead`,`rage`,`visitor_hash`,`session_hash`)
+            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:dead,:rage,:visitor_hash,:session_hash)";
         $stmt = $db->prepare($sql);
         // Scroll depth is re-sent on every flush so it survives a missed
         // pagehide; keep one max-depth row per (session, path, device) rather
@@ -410,6 +422,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ':scroll_pct' => $scrollPct,
                 ':selector' => substr($sanitizer->text((string) ($ev['selector'] ?? '')), 0, 255),
                 ':label' => substr($sanitizer->text((string) ($ev['label'] ?? '')), 0, 255),
+                ':dead' => !empty($ev['dead']) ? 1 : 0,
+                ':rage' => !empty($ev['rage']) ? 1 : 0,
                 ':visitor_hash' => $this->hashId($ev['visitorId'] ?? ''),
                 ':session_hash' => $sessionHash,
             ]);
@@ -675,6 +689,36 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $out[$b] += (int) $row['c'];
         }
         return $out;
+    }
+
+    /**
+     * Frustration-signal clicks (dead or rage) grouped by selector for a
+     * path/device/date range. $flag is 'dead' or 'rage'. Returns rows:
+     * ['selector'=>string, 'label'=>string, 'c'=>count] descending by count.
+     */
+    protected function getFrustrationClicks($flag, $path, $device, $fromDate, $toDate) {
+        $col = $flag === 'rage' ? 'rage' : 'dead';
+        $db = $this->wire('database');
+        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `$col`=1 AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
+            GROUP BY `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function getDeadClicks($path, $device, $fromDate, $toDate) {
+        return $this->getFrustrationClicks('dead', $path, $device, $fromDate, $toDate);
+    }
+
+    public function getRageClicks($path, $device, $fromDate, $toDate) {
+        return $this->getFrustrationClicks('rage', $path, $device, $fromDate, $toDate);
     }
 
     public function getModuleConfigInputfields(array $data) {
