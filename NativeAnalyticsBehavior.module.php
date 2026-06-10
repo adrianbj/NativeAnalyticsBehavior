@@ -202,6 +202,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             `dh` INT UNSIGNED NOT NULL DEFAULT 0,
             `scroll_pct` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `selector` VARCHAR(255) NOT NULL DEFAULT '',
+            `label` VARCHAR(255) NOT NULL DEFAULT '',
             `visitor_hash` CHAR(64) NOT NULL DEFAULT '',
             `session_hash` CHAR(64) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`),
@@ -224,6 +225,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             UNIQUE KEY `bucket` (`path_hash`, `device`),
             KEY `captured_at` (`captured_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // `label` was added after the events table shipped, so the CREATE above
+        // is a no-op on existing installs. Add it idempotently for those.
+        $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'label'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `label` VARCHAR(255) NOT NULL DEFAULT '' AFTER `selector`");
+        }
         $done = true;
     }
     protected function shouldInjectCurrentRequest() {
@@ -352,8 +359,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
 
         $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
-            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`visitor_hash`,`session_hash`)
-            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:visitor_hash,:session_hash)";
+            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`visitor_hash`,`session_hash`)
+            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:visitor_hash,:session_hash)";
         $stmt = $db->prepare($sql);
         // Scroll depth is re-sent on every flush so it survives a missed
         // pagehide; keep one max-depth row per (session, path, device) rather
@@ -402,6 +409,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ':dh' => max(0, (int) ($ev['dh'] ?? 0)),
                 ':scroll_pct' => $scrollPct,
                 ':selector' => substr($sanitizer->text((string) ($ev['selector'] ?? '')), 0, 255),
+                ':label' => substr($sanitizer->text((string) ($ev['label'] ?? '')), 0, 255),
                 ':visitor_hash' => $this->hashId($ev['visitorId'] ?? ''),
                 ':session_hash' => $sessionHash,
             ]);
@@ -509,7 +517,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     public function searchTrackedPaths($term, $limit = 20) {
         $term = trim((string) $term);
         $len = function_exists('mb_strlen') ? mb_strlen($term) : strlen($term);
-        if($len < 2) return [];
+        if($len < 1) return [];
         $limit = max(1, min(50, (int) $limit));
         $like = '%' . $this->escapeLikeTerm($term) . '%';
         $db = $this->wire('database');
@@ -554,24 +562,17 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * The stored DOM snapshot for a path/device, gunzipped. A $device of 'all'
-     * returns the widest captured snapshot for the path (broadest layout
-     * resolves the most click selectors).
+     * The stored DOM snapshot for a path/device, gunzipped.
      * Returns ['device'=>string, 'capture_width'=>int, 'captured_at'=>string, 'dom'=>string(JSON)] or null.
      */
     public function getSnapshot($path, $device) {
         $db = $this->wire('database');
-        $ph = md5('/' . ltrim((string) $path, '/'));
-        if((string) $device === 'all') {
-            $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
-                FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph
-                ORDER BY `capture_width` DESC LIMIT 1");
-            $stmt->execute([':ph' => $ph]);
-        } else {
-            $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
-                FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
-            $stmt->execute([':ph' => $ph, ':dev' => (string) $device]);
-        }
+        $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
+            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+        ]);
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
         if(!$row) return null;
         $json = gzdecode($row['dom_gz']);
@@ -585,24 +586,68 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Click counts grouped by CSS selector for a path/device/date range.
-     * Returns rows: ['selector'=>string, 'c'=>count], descending by count.
+     * Total tracked events (clicks + scroll rows) per device for a path/range.
+     * Returns a device=>count map; devices with no events are absent.
      */
-    public function getClickSelectorHeatmap($path, $device, $fromDate, $toDate) {
+    public function getDeviceEventCounts($path, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $all = ((string) $device === 'all');
-        $sql = "SELECT `selector`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='click' AND `path_hash`=:ph" . ($all ? '' : ' AND `device`=:dev') . "
-              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
-            GROUP BY `selector` ORDER BY c DESC";
-        $stmt = $db->prepare($sql);
-        $params = [
+        $stmt = $db->prepare("SELECT `device`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+            GROUP BY `device`");
+        $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
-        ];
-        if(!$all) $params[':dev'] = (string) $device;
-        $stmt->execute($params);
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_KEY_PAIR);
+    }
+
+    /**
+     * Best initial device for a path: the one with the most clicks in range,
+     * falling back to the widest captured snapshot, then 'desktop'. Used when
+     * the dashboard loads without an explicit device choice.
+     */
+    public function getDefaultDevice($path, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $ph = md5('/' . ltrim((string) $path, '/'));
+        $stmt = $db->prepare("SELECT `device` FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `path_hash`=:ph AND `selector` <> ''
+              AND `created_date` BETWEEN :from AND :to
+            GROUP BY `device` ORDER BY COUNT(*) DESC LIMIT 1");
+        $stmt->execute([
+            ':ph' => $ph,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        $dev = (string) $stmt->fetchColumn();
+        if($dev !== '') return $dev;
+        $stmt = $db->prepare("SELECT `device` FROM `" . self::SNAPSHOT_TABLE . "`
+            WHERE `path_hash`=:ph ORDER BY `capture_width` DESC LIMIT 1");
+        $stmt->execute([':ph' => $ph]);
+        $dev = (string) $stmt->fetchColumn();
+        return $dev !== '' ? $dev : 'desktop';
+    }
+
+    /**
+     * Click counts grouped by CSS selector for a path/device/date range.
+     * Returns rows: ['selector'=>string, 'label'=>string, 'c'=>count], descending
+     * by count. `label` is a representative human-readable label (link/button text,
+     * aria-label, etc.); MAX() prefers a non-empty one, and it stays '' for older
+     * clicks captured before labels were collected.
+     */
+    public function getClickSelectorHeatmap($path, $device, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
+            GROUP BY `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
         return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
@@ -612,20 +657,18 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getScrollHeatmap($path, $device, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $all = ((string) $device === 'all');
         $sql = "SELECT FLOOR(`scroll_pct`/10) AS depth_bucket, COUNT(*) AS c
             FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='scroll' AND `path_hash`=:ph" . ($all ? '' : ' AND `device`=:dev') . "
+            WHERE `type`='scroll' AND `path_hash`=:ph AND `device`=:dev
               AND `created_date` BETWEEN :from AND :to
             GROUP BY depth_bucket";
         $stmt = $db->prepare($sql);
-        $params = [
+        $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
-        ];
-        if(!$all) $params[':dev'] = (string) $device;
-        $stmt->execute($params);
+        ]);
         $out = array_fill(0, 11, 0);
         foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
             $b = max(0, min(10, (int) $row['depth_bucket']));

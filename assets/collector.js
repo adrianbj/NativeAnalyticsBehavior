@@ -120,6 +120,60 @@
     return parts.join(" > ").slice(0, 255);
   }
 
+  // --- human-readable label for a click target, for the dashboard table ---
+  // The structural selector is unreadable ("ul.uk-accordion > li > a:nth-child"),
+  // so capture the control's visible meaning. Skip masked/blocked subtrees so we
+  // never lift PII text off this platform; the dashboard falls back to the
+  // selector when the label is empty.
+  // Visible text only: clone and drop <style>/<script>/<svg> first, since
+  // textContent otherwise concatenates CSS from inline SVG icons (e.g. UIKit's
+  // accordion-icon <style>) onto the real label.
+  function visibleText(el) {
+    var clone = el.cloneNode(true);
+    var junk = clone.querySelectorAll("style, script, svg");
+    for (var i = 0; i < junk.length; i++) {
+      if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+    }
+    return clone.textContent || "";
+  }
+
+  // Associated <label> text for a form control, so a click on a bare text field
+  // reads "First name" rather than "input#register_first_name". Resolves both
+  // label[for=id] and a wrapping <label>; nested controls are stripped so we get
+  // the prompt text, not the field's own value/options.
+  function fieldLabel(el) {
+    var tag = el.nodeName.toLowerCase();
+    if (tag !== "input" && tag !== "select" && tag !== "textarea") return "";
+    var lbl = null;
+    var id = el.getAttribute("id");
+    if (id) {
+      try { lbl = el.ownerDocument.querySelector("label[for=\"" + cssEscape(id) + "\"]"); } catch (e) {}
+    }
+    if (!lbl && el.closest) lbl = el.closest("label");
+    if (!lbl) return "";
+    var clone = lbl.cloneNode(true);
+    var junk = clone.querySelectorAll("style, script, svg, input, select, textarea");
+    for (var i = 0; i < junk.length; i++) {
+      if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+    }
+    return clone.textContent || "";
+  }
+
+  function clickLabel(el) {
+    if (!el || el.nodeType !== 1) return "";
+    if (el.closest && el.closest("[data-na-block], [data-na-mask]")) return "";
+    var txt = el.getAttribute("aria-label")
+      || (el.nodeName.toLowerCase() === "img" ? el.getAttribute("alt") : "")
+      || el.getAttribute("title")
+      || visibleText(el)
+      || fieldLabel(el)
+      || el.getAttribute("placeholder")
+      || el.getAttribute("value")
+      || "";
+    txt = txt.replace(/\s+/g, " ").trim();
+    return txt.slice(0, 100);
+  }
+
   function docWidth() {
     return Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0, window.innerWidth || 0);
   }
@@ -135,6 +189,7 @@
   function recordClick(e) {
     var dw = docWidth() || 1;
     var xFrac = Math.max(0, Math.min(1000, Math.round((e.pageX / dw) * 1000)));
+    var target = resolveTarget(e.target);
     queue.push({
       type: "click",
       path: path,
@@ -144,6 +199,7 @@
       vw: Math.round(window.innerWidth || 0),
       dh: Math.round(docHeight()),
       selector: cssSelector(e.target),
+      label: clickLabel(target),
       visitorId: visitorId,
       sessionId: sessionId
     });

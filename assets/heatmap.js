@@ -40,6 +40,18 @@
       for (var n = 0; n < noscripts.length; n++) {
         if (noscripts[n].parentNode) noscripts[n].parentNode.removeChild(noscripts[n]);
       }
+      // The iframe's vertical scrollbar (classic ~15px on desktop) eats into the
+      // viewport width, so full-width (100vw) elements captured on a scrollbar-
+      // less mobile viewport overflow horizontally and add a spurious horizontal
+      // scrollbar. Clip that overflow with overflow-x:hidden — the few stray px
+      // are an artifact, not real content. overflow-y computes to auto, so the
+      // vertical scrollbar stays visible as the scroll affordance.
+      var head = doc.head || doc.getElementsByTagName("head")[0];
+      if (head) {
+        var style = doc.createElement("style");
+        style.textContent = "html{overflow-x:hidden}";
+        head.appendChild(style);
+      }
       return true;
     }
 
@@ -111,14 +123,14 @@
         bar.className = "nab-legend-bar";
         var hi = document.createElement("span");
         hi.className = "nab-legend-hi";
-        legend.appendChild(document.createTextNode("Clicks "));
+        legend.appendChild(document.createTextNode("Clicks per element "));
         legend.appendChild(lo);
         legend.appendChild(bar);
         legend.appendChild(hi);
         meta.appendChild(legend);
       }
       var hiLabel = legend.querySelector(".nab-legend-hi");
-      if (hiLabel) hiLabel.textContent = maxC + (maxC === 1 ? " click" : " clicks");
+      if (hiLabel) hiLabel.textContent = String(maxC);
     }
 
     // The heat layer is the parent-level #nab-canvas, a sibling of the iframe in
@@ -229,13 +241,101 @@
         var label = pct + "%";
         var tw = ctx.measureText(label).width;
         var pillW = tw + 12, pillH = 18;
-        var px = visLeft + visW - pillW - 8;
+        // Pin to the visible right edge, but never past the canvas: a narrow
+        // (mobile) backdrop makes the canvas narrower than the stage, so the
+        // stage's right edge would fall off the canvas bitmap and clip the pill.
+        var px = Math.min(visLeft + visW, w) - pillW - 8;
         ctx.fillStyle = "rgba(11,120,150,0.92)";
         ctx.fillRect(px, y - pillH / 2, pillW, pillH);
         ctx.fillStyle = "#fff";
         ctx.fillText(label, px + 6, y + 1);
       }
       ctx.restore();
+    }
+
+    // Human-readable label for a backdrop section row. Forms report their
+    // name/id; headings report their text with inline <style>/<svg> stripped
+    // (UIKit icon <style> blocks otherwise leak CSS into the text).
+    function sectionLabel(el) {
+      if (el.nodeName.toLowerCase() === "form") {
+        // Skip anonymous forms (e.g. a header search box): a bare "Form" row
+        // tells you nothing. Only name/id-bearing forms are worth listing.
+        var n = (el.getAttribute("name") || el.getAttribute("id") || "").replace(/\s+/g, " ").trim();
+        return n ? "Form: " + n : "";
+      }
+      var clone = el.cloneNode(true);
+      var junk = clone.querySelectorAll("style, script, svg");
+      for (var i = 0; i < junk.length; i++) {
+        if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+      }
+      return (clone.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    }
+
+    // Build the section-reach table: for each h1/h2/h3 and form in the backdrop,
+    // the share of sessions that scrolled far enough to see it. A section's depth
+    // is its document offset over full document height, snapped to the nearest
+    // 10% bucket of the scroll histogram (the only granularity captured), then
+    // reach = sessions in that bucket or deeper. Rebuilt on the same layout
+    // settle/resize ticks as the heat, since image loads shift offsets.
+    function buildSectionTable() {
+      var container = document.getElementById("nab-scroll-sections");
+      if (!container) return;
+      var doc = frameDoc();
+      if (!doc) return;
+      var total = 0, j;
+      for (j = 0; j < scroll.length; j++) total += parseInt(scroll[j], 10) || 0;
+      if (total === 0) { container.innerHTML = ""; return; }
+      var root = doc.documentElement, body = doc.body;
+      var fullH = Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0);
+      if (!fullH) return;
+      var win = frame.contentWindow;
+      var sy = (win && win.pageYOffset) || 0;
+      var nodes = doc.querySelectorAll("h1, h2, form");
+      var rows = [];
+      for (var i = 0; i < nodes.length && rows.length < 40; i++) {
+        var el = nodes[i];
+        var label = sectionLabel(el);
+        if (!label) continue;
+        var r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        var frac = (r.top + sy) / fullH;
+        if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
+        var bucket = Math.round(frac * 10);
+        if (bucket < 0) bucket = 0; else if (bucket > 10) bucket = 10;
+        var reached = 0;
+        for (j = bucket; j < scroll.length; j++) reached += parseInt(scroll[j], 10) || 0;
+        rows.push({
+          label: label,
+          pct: Math.round((reached / total) * 100),
+          level: el.nodeName.toLowerCase() === "h2" ? 2 : 1
+        });
+      }
+      renderSectionTable(container, rows);
+    }
+
+    function renderSectionTable(container, rows) {
+      container.innerHTML = "";
+      if (!rows.length) return;
+      var table = document.createElement("table");
+      table.className = "nab-click-table uk-table uk-table-small uk-table-divider";
+      var thead = document.createElement("thead");
+      thead.innerHTML = "<tr><th>Section reach</th><th class=\"nab-click-num\">Seen by</th></tr>";
+      table.appendChild(thead);
+      var tbody = document.createElement("tbody");
+      for (var i = 0; i < rows.length; i++) {
+        var tr = document.createElement("tr");
+        var tdL = document.createElement("td");
+        tdL.className = "nab-sec-l" + rows[i].level;
+        tdL.textContent = rows[i].label;
+        var tdN = document.createElement("td");
+        tdN.className = "nab-click-num";
+        tdN.textContent = rows[i].pct + "%";
+        tr.appendChild(tdL);
+        tr.appendChild(tdN);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      container.appendChild(table);
     }
 
     function bindFrameScroll() {
@@ -254,15 +354,15 @@
       if (!rebuildInto(doc)) return;
       // Allow layout to settle before measuring element boxes, then redraw a
       // couple more times as images load and shift box positions.
-      setTimeout(function () { drawHeat(); bindFrameScroll(); }, 50);
-      setTimeout(drawHeat, 400);
-      setTimeout(drawHeat, 1200);
+      setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
+      setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
+      setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);
       // When embedded in a WireTab, the panel starts display:none, so the frame
       // has zero size at load and every early drawHeat bails. Redraw once the
       // tab is shown and the frame gains real dimensions. drawHeat no-ops on a
       // zero-size frame, so the initial 0->0 callbacks are harmless.
       if (typeof ResizeObserver === "function") {
-        new ResizeObserver(function () { drawHeat(); }).observe(frame);
+        new ResizeObserver(function () { drawHeat(); buildSectionTable(); }).observe(frame);
       }
     }
 

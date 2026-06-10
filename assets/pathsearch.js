@@ -36,6 +36,11 @@
         results.innerHTML = "";
       }
 
+      function showLoading() {
+        results.innerHTML = "<div class=\"nab-pathfind-loading\"><span class=\"nab-pathfind-spinner\"></span>Searching…</div>";
+        results.hidden = false;
+      }
+
       function render(items) {
         if (!items || !items.length) {
           results.innerHTML = "<div class=\"nab-pathfind-empty\">No matching paths</div>";
@@ -63,14 +68,22 @@
         fetch(cfg.url + "?q=" + encodeURIComponent(q), opts)
           .then(function (r) { return r.ok ? r.json() : []; })
           .then(function (data) { render(data); })
-          .catch(function () { /* aborted or failed: leave field usable */ });
+          .catch(function (e) {
+            // An abort means a newer keystroke is already showing its spinner,
+            // so leave the dropdown alone; a real failure should clear it.
+            if (e && e.name === "AbortError") return;
+            hide();
+          });
       }
 
       input.addEventListener("input", function () {
         var q = input.value.trim();
         if (timer) clearTimeout(timer);
-        if (q.length < 2) { hide(); return; }
-        timer = setTimeout(function () { search(q); }, 250);
+        if (q.length < 1) { hide(); return; }
+        // Show the spinner on the first keystroke so feedback is immediate,
+        // then debounce the actual request.
+        showLoading();
+        timer = setTimeout(function () { search(q); }, 120);
       });
 
       results.addEventListener("click", function (ev) {

@@ -70,19 +70,40 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $sanitizer = $this->wire('sanitizer');
 
         $paths = $this->core->getTrackedPaths();
-        $path = $sanitizer->text($input->get('path')) ?: ($paths[0] ?? '/');
-        $device = $sanitizer->option($input->get('device'), ['all', 'desktop', 'tablet', 'mobile']) ?: 'all';
+        // Prefer an explicit path; otherwise adopt the page selected in the main
+        // NativeAnalytics dashboard (page_id), so switching to the Behavior tab
+        // lands on the same page. Fall back to the most-tracked path.
+        $path = $sanitizer->text($input->get('path'));
+        if(!$path) {
+            $pageId = (int) $input->get('page_id');
+            if($pageId > 0) {
+                $selected = $this->wire('pages')->get($pageId);
+                if($selected && $selected->id) $path = $selected->url;
+            }
+        }
+        if(!$path) $path = $paths[0] ?? '/';
         $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
         $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-30 days'));
+        // A range preset button (7/30/90 days) overrides the date inputs.
+        $preset = (int) $input->get('preset');
+        if(in_array($preset, [7, 30, 90], true)) {
+            $to = date('Y-m-d');
+            $from = date('Y-m-d', strtotime('-' . $preset . ' days'));
+        }
+        // No explicit device: open on the device with the most clicks for this page.
+        $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile'])
+            ?: $this->core->getDefaultDevice($path, $from, $to);
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
         $snapshot = $this->core->getSnapshot($path, $device);
 
         // Controls form
+        $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
         $deviceOpts = '';
-        foreach(['all' => 'All', 'desktop' => 'Desktop', 'tablet' => 'Tablet', 'mobile' => 'Mobile'] as $v => $label) {
-            $deviceOpts .= '<option value="' . $v . '"' . ($v === $device ? ' selected' : '') . '>' . $label . '</option>';
+        foreach(['desktop' => 'Desktop', 'tablet' => 'Tablet', 'mobile' => 'Mobile'] as $v => $label) {
+            $count = (int) ($deviceCounts[$v] ?? 0);
+            $deviceOpts .= '<option value="' . $v . '"' . ($v === $device ? ' selected' : '') . '>' . $label . ' (' . $count . ')</option>';
         }
 
         $out  = '<form method="get" class="nab-controls">';
@@ -93,6 +114,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '<label class="uk-form-label">From <input type="date" name="from" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($from) . '"></label> ';
         $out .= '<label class="uk-form-label">To <input type="date" name="to" class="uk-input uk-form-width-small" value="' . $sanitizer->entities($to) . '"></label> ';
         $out .= '<button type="submit" class="uk-button uk-button-primary">Apply</button>';
+        $out .= '<span class="nab-presets">'
+            . '<button type="submit" name="preset" value="7" class="uk-button uk-button-default uk-button-small">7d</button>'
+            . '<button type="submit" name="preset" value="30" class="uk-button uk-button-default uk-button-small">30d</button>'
+            . '<button type="submit" name="preset" value="90" class="uk-button uk-button-default uk-button-small">90d</button>'
+            . '</span>';
         $out .= '</form>';
 
         // Wire up the path autocomplete. Resolve the Behavior process page URL
@@ -113,9 +139,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         if(!$snapshot) {
-            $deviceNote = $device === 'all' ? '' : ' (' . $sanitizer->entities($device) . ')';
             return $out . '<p>No snapshot captured yet for <strong>' . $sanitizer->entities($path)
-                . '</strong>' . $deviceNote . '. Visit that page as a logged-out visitor to capture one, then reload this dashboard.</p>';
+                . '</strong> (' . $sanitizer->entities($device) . '). Visit that page as a logged-out visitor to capture one, then reload this dashboard.</p>';
         }
 
         $payload = json_encode([
@@ -124,8 +149,43 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'captureWidth' => $snapshot['capture_width'],
         ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 
+        $clickTotal = 0;
+        foreach($clicks as $c) $clickTotal += (int) $c['c'];
+        $scrollTotal = array_sum($scroll);
+
         $out .= '<p class="nab-snapshot-meta">Backdrop captured ' . $sanitizer->entities($snapshot['captured_at'])
-            . ' at ' . (int) $snapshot['capture_width'] . 'px (' . $sanitizer->entities($snapshot['device']) . '). <span id="nab-unmatched"></span></p>';
+            . ' at ' . (int) $snapshot['capture_width'] . 'px (' . $sanitizer->entities($snapshot['device']) . '). '
+            . $clickTotal . ' ' . ($clickTotal === 1 ? 'click' : 'clicks')
+            . ' · ' . $scrollTotal . ' scroll ' . ($scrollTotal === 1 ? 'session' : 'sessions') . '.'
+            . ' <span id="nab-unmatched"></span></p>';
+
+        // Two side-by-side tables complement the visual heatmap. The clicks
+        // table includes elements that don't resolve in the backdrop (the
+        // "unmatched" ones) which the overlay can't show. The scroll-reach table
+        // is built client-side by heatmap.js (it needs the laid-out backdrop to
+        // locate each heading/form), so the right column is just a placeholder.
+        $out .= '<div class="nab-tables">';
+
+        $out .= '<div class="nab-tables-col">';
+        if($clicks) {
+            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
+            foreach(array_slice($clicks, 0, 20) as $c) {
+                $label = trim((string) ($c['label'] ?? ''));
+                $cell = $label !== ''
+                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
+                    : '<code class="nab-click-sel">' . $sanitizer->entities($c['selector']) . '</code>';
+                $out .= '<tr><td>' . $cell . '</td>'
+                    . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
+            }
+            $out .= '</tbody></table>';
+        }
+        $out .= '</div>';
+
+        $out .= '<div class="nab-tables-col" id="nab-scroll-sections"></div>';
+
+        $out .= '</div>';
+
         $out .= '<div class="nab-stage">';
         $out .= '<iframe id="nab-frame" sandbox="allow-same-origin"></iframe>';
         $out .= '<canvas id="nab-canvas"></canvas>';
