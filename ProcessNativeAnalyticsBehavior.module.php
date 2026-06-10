@@ -12,7 +12,10 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'permissions' => ['nativeanalyticsbehavior-view' => 'View NativeAnalyticsBehavior dashboard'],
             'icon' => 'fire',
             'requires' => ['NativeAnalyticsBehavior'],
-            'page' => ['name' => 'behavior-analytics', 'parent' => 'setup', 'title' => 'Behavior'],
+            // Hidden: the dashboard is reached through the NativeAnalytics
+            // "Behavior" tab and its AJAX endpoints, never navigated to directly,
+            // so it stays out of the Setup menu. Endpoint lookups use include=all.
+            'page' => ['name' => 'behavior-analytics', 'parent' => 'setup', 'title' => 'Behavior', 'status' => Page::statusHidden],
         ];
     }
 
