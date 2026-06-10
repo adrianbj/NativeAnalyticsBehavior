@@ -263,6 +263,21 @@
     return Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0, window.innerHeight || 0);
   }
 
+  // Where within the clicked element the cursor landed, as 0..1000 fractions of
+  // the element's box. The density heatmap anchors each blob to the element in
+  // the rebuilt backdrop (whose layout differs from capture time) using these,
+  // instead of absolute page coordinates that drift. Relative to e.target so it
+  // matches the stored cssSelector(e.target). Defaults to the centre when the
+  // element has no box.
+  function elementOffset(el, clientX, clientY) {
+    if (!el || el.nodeType !== 1) return { x: 500, y: 500 };
+    var r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return { x: 500, y: 500 };
+    var fx = Math.round(((clientX - r.left) / r.width) * 1000);
+    var fy = Math.round(((clientY - r.top) / r.height) * 1000);
+    return { x: Math.max(0, Math.min(1000, fx)), y: Math.max(0, Math.min(1000, fy)) };
+  }
+
   var path = window.location.pathname || "/";
   var queue = [];
   var maxScrollPct = 0;
@@ -275,6 +290,7 @@
     var target = resolveTarget(e.target);
     if (isContainerClick(target)) return;
     var selecting = hasTextSelection();
+    var off = elementOffset(e.target, e.clientX, e.clientY);
     queue.push({
       type: "click",
       path: path,
@@ -284,6 +300,8 @@
       vw: Math.round(window.innerWidth || 0),
       dh: Math.round(docHeight()),
       selector: cssSelector(e.target),
+      offx: off.x,
+      offy: off.y,
       label: clickLabel(target),
       dead: (!selecting && isDeadClick(e.target)) ? 1 : 0,
       rage: (!selecting && isRageClick(Date.now(), e.pageX, e.pageY)) ? 1 : 0,

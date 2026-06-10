@@ -353,6 +353,38 @@
       octx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
     }
 
+    // Document-space point for a click, anchored to the clicked element when its
+    // selector still resolves in the rebuilt backdrop (so it tracks the live
+    // layout instead of drifting). offx/offy are 0..1000 fractions of the
+    // element's box captured at click time (pre-offset rows default to the
+    // centre). Returns null to signal "fall back to the recorded coordinates"
+    // (selector absent/restructured), letting the caller use NABStage.point.
+    // Resolve a selector against the (static, built-once) backdrop, memoized for
+    // the life of the loaded snapshot. Density's coords are per-click (thousands),
+    // and many share a selector, so without this each scroll redraw would run a
+    // querySelector per click. The resolved element is stable; only its rect
+    // (read live via getBoundingClientRect) changes with layout/scroll.
+    var selCache = {};
+    function resolveCached(doc, sel) {
+      if (Object.prototype.hasOwnProperty.call(selCache, sel)) return selCache[sel];
+      selCache[sel] = NABStage.resolveSelector(doc, sel) || null;
+      return selCache[sel];
+    }
+
+    function elementDocPoint(c, doc, win) {
+      var sel = c[5];
+      if (!sel) return null;
+      var el = resolveCached(doc, sel);
+      if (!el) return null;
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) return null;
+      var ofx = (typeof c[3] === "number" ? c[3] : 500) / 1000;
+      var ofy = (typeof c[4] === "number" ? c[4] : 500) / 1000;
+      var sx = (win && win.pageXOffset) || 0;
+      var sy = (win && win.pageYOffset) || 0;
+      return { x: r.left + sx + ofx * r.width, y: r.top + sy + ofy * r.height };
+    }
+
     // Peak accumulated alpha across the WHOLE document, so the colour scale is
     // fixed: a cluster keeps its temperature no matter what else is on screen.
     // Scrolling re-renders only the visible canvas, so normalizing against that
@@ -372,9 +404,21 @@
       off.width = cw;
       off.height = ch;
       var octx = off.getContext("2d");
-      var i, c, dh;
+      var doc = frameDoc();
+      var win = frame.contentWindow;
+      var i, c, dh, dp;
+      // Plot with the SAME element anchoring as the visible render, so the peak
+      // this normalizes against matches what's actually drawn. A coordinate-based
+      // max would understate element clusters and let hot spots saturate to full
+      // red. Element points are document-space; scale them like the coordinate
+      // fallback so the offscreen overlap pattern (and thus the peak) is faithful.
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
+        dp = doc ? elementDocPoint(c, doc, win) : null;
+        if (dp) {
+          paintBlob(octx, dp.x * scale, dp.y * scale, radius);
+          continue;
+        }
         dh = c[2] || 0;
         if (dh <= 0) continue;
         paintBlob(octx, (c[0] / 1000) * fullW * scale, (c[1] / dh) * fullH * scale, radius);
@@ -398,13 +442,24 @@
       off.width = w;
       off.height = h;
       var octx = off.getContext("2d");
-      var i, c, dh, pt;
+      var win = frame.contentWindow;
+      var sx = (win && win.pageXOffset) || 0;
+      var sy = (win && win.pageYOffset) || 0;
+      var i, c, dh, pt, dp;
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
-        dh = c[2] || 0;
-        if (dh <= 0) continue;
-        pt = NABStage.point(g, c[0], c[1], dh);
-        if (!pt) continue;
+        // Prefer anchoring the blob to the clicked element (document-space point
+        // converted to canvas space); fall back to the recorded page-fraction
+        // coordinates when the selector no longer resolves.
+        dp = elementDocPoint(c, doc, win);
+        if (dp) {
+          pt = { x: dp.x - sx + ox, y: dp.y - sy + oy };
+        } else {
+          dh = c[2] || 0;
+          if (dh <= 0) continue;
+          pt = NABStage.point(g, c[0], c[1], dh);
+          if (!pt) continue;
+        }
         if (pt.x < -DENSITY_RADIUS || pt.x > w + DENSITY_RADIUS) continue;
         if (pt.y < -DENSITY_RADIUS || pt.y > h + DENSITY_RADIUS) continue;
         paintBlob(octx, pt.x, pt.y, DENSITY_RADIUS);

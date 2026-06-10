@@ -227,6 +227,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             `dh` INT UNSIGNED NOT NULL DEFAULT 0,
             `scroll_pct` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `selector` VARCHAR(255) NOT NULL DEFAULT '',
+            `offx` SMALLINT UNSIGNED NOT NULL DEFAULT 500,
+            `offy` SMALLINT UNSIGNED NOT NULL DEFAULT 500,
             `label` VARCHAR(255) NOT NULL DEFAULT '',
             `dead` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0,
@@ -269,6 +271,18 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'rage'");
         if($col && $col->rowCount() === 0) {
             $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `dead`");
+        }
+        // `offx`/`offy` shipped with element-anchored density: where in the clicked
+        // element the cursor landed (0..1000 fractions of its box), so the density
+        // heatmap can pin each blob to the element in the rebuilt backdrop instead
+        // of to absolute page coordinates that drift. Add them idempotently on
+        // existing installs. Pre-existing rows default to the centre (500), which
+        // anchors them to their element's middle — drift-free location, just
+        // without intra-element spread.
+        $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'offx'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `offx` SMALLINT UNSIGNED NOT NULL DEFAULT 500 AFTER `selector`");
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `offy` SMALLINT UNSIGNED NOT NULL DEFAULT 500 AFTER `offx`");
         }
         // `na_session_hash` shipped with the bot-flag reuse: the session hash under
         // NativeAnalytics' salt so we can exclude sessions NA flagged as bots. Add
@@ -517,8 +531,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
 
         $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
-            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`dead`,`rage`,`visitor_hash`,`session_hash`,`na_session_hash`)
-            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:dead,:rage,:visitor_hash,:session_hash,:na_session_hash)";
+            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`offx`,`offy`,`label`,`dead`,`rage`,`visitor_hash`,`session_hash`,`na_session_hash`)
+            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:offx,:offy,:label,:dead,:rage,:visitor_hash,:session_hash,:na_session_hash)";
         $stmt = $db->prepare($sql);
         // Scroll depth is re-sent on every flush so it survives a missed
         // pagehide; keep one max-depth row per (session, path, device) rather
@@ -569,6 +583,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ':dh' => max(0, (int) ($ev['dh'] ?? 0)),
                 ':scroll_pct' => $scrollPct,
                 ':selector' => substr($sanitizer->text((string) ($ev['selector'] ?? '')), 0, 255),
+                ':offx' => max(0, min(1000, (int) ($ev['offx'] ?? 500))),
+                ':offy' => max(0, min(1000, (int) ($ev['offy'] ?? 500))),
                 ':label' => substr($sanitizer->text((string) ($ev['label'] ?? '')), 0, 255),
                 ':dead' => !empty($ev['dead']) ? 1 : 0,
                 ':rage' => !empty($ev['rage']) ? 1 : 0,
@@ -917,16 +933,19 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Raw click coordinates for a pixel-density heatmap. Returns up to $limit
-     * compact [x_frac, y_px, dh] triples (x_frac is 0..1000 of doc width; y_px /
-     * dh gives the vertical fraction), letting the overlay place each click on the
-     * backdrop regardless of the original page's dimensions. Each row is one
-     * click, so repeated clicks naturally weight the density.
+     * Raw click data for a pixel-density heatmap. Returns up to $limit compact
+     * [x_frac, y_px, dh, offx, offy, selector] tuples, newest first. The overlay
+     * anchors each blob to the clicked element resolved by `selector` in the
+     * rebuilt backdrop, placing it at the recorded element-relative offset
+     * (offx/offy are 0..1000 fractions of the element's box); when the selector
+     * no longer resolves it falls back to the page-fraction coordinates (x_frac
+     * is 0..1000 of doc width; y_px / dh gives the vertical fraction). Each row
+     * is one click, so repeated clicks naturally weight the density.
      */
     public function getClickCoordinates($path, $device, $fromDate, $toDate, $limit = 5000) {
         $db = $this->wire('database');
         $limit = max(1, min(20000, (int) $limit));
-        $sql = "SELECT `x_frac`, `y_px`, `dh` FROM `" . self::EVENTS_TABLE . "`
+        $sql = "SELECT `x_frac`, `y_px`, `dh`, `offx`, `offy`, `selector` FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
               AND `created_date` BETWEEN :from AND :to AND `dh` > 0" . $this->botExclusionSql() . "
             ORDER BY `id` DESC LIMIT $limit";
@@ -939,7 +958,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         ]);
         $out = [];
         foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-            $out[] = [(int) $r['x_frac'], (int) $r['y_px'], (int) $r['dh']];
+            $out[] = [(int) $r['x_frac'], (int) $r['y_px'], (int) $r['dh'], (int) $r['offx'], (int) $r['offy'], (string) $r['selector']];
         }
         return $out;
     }
@@ -1223,7 +1242,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * up to $limit rows (default 200); callers compute "+N more" from the
      * journey's authoritative interaction_count.
      *
-     * @return array<int,array{type:string,x_frac:int,y_px:int,dh:int,selector:string,label:string,dead:int,rage:int,t:string}>
+     * @return array<int,array{type:string,x_frac:int,y_px:int,dh:int,offx:int,offy:int,selector:string,label:string,dead:int,rage:int,t:string}>
      */
     public function getSessionInteractions($sessionHash, $pathHash, $device, $limit = 200) {
         $sessionHash = (string) $sessionHash;
@@ -1231,7 +1250,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $limit = max(1, min(500, (int) $limit));
         $device = in_array((string) $device, ['desktop', 'tablet', 'mobile'], true) ? (string) $device : 'desktop';
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `type`,`x_frac`,`y_px`,`dh`,`selector`,`label`,`dead`,`rage`,`created_at`
+        $stmt = $db->prepare("SELECT `type`,`x_frac`,`y_px`,`dh`,`offx`,`offy`,`selector`,`label`,`dead`,`rage`,`created_at`
             FROM `" . self::EVENTS_TABLE . "`
             WHERE `na_session_hash`=:sh AND `path_hash`=:ph AND `device`=:dev
               AND `type` IN ('click','copy')
@@ -1245,6 +1264,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 'x_frac' => (int) $r['x_frac'],
                 'y_px' => (int) $r['y_px'],
                 'dh' => (int) $r['dh'],
+                'offx' => (int) $r['offx'],
+                'offy' => (int) $r['offy'],
                 'selector' => (string) $r['selector'],
                 'label' => (string) $r['label'],
                 'dead' => ((int) $r['dead']) ? 1 : 0,

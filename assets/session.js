@@ -395,8 +395,12 @@
       if (spinner) spinner.hidden = !on;
     }
 
-    // Scroll the iframe (vertical) and stage (horizontal) so the highlighted
-    // action lands roughly centred in the visible window.
+    // Centre the highlighted action in the visible window. The iframe scrolls
+    // VERTICALLY (its content is taller than the fixed-height frame), but it
+    // can't scroll horizontally — the rebuilt content fits the captured-width
+    // iframe (html{overflow-x:hidden}), so the iframe element is wider than the
+    // stage and the STAGE is the horizontal scroller. Hence two different axes
+    // on two different elements.
     function scrollToWithin(p, withinIndex) {
       if (!p || !p.has_backdrop || withinIndex < 0) return;
       var it = (p.interactions || [])[withinIndex];
@@ -412,8 +416,13 @@
         if (el) {
           var r = el.getBoundingClientRect();
           if (r.width > 0 || r.height > 0) {
-            if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height / 2 - frame.clientHeight / 2));
-            if (stage) stage.scrollLeft = Math.max(0, stage.scrollLeft + r.left + r.width / 2 - stage.clientWidth / 2);
+            // Centre the recorded click POINT (where the pin sits, via offx/offy),
+            // not the element box: a container far wider/taller than the viewport
+            // would otherwise leave the actual click — and its pin — off-screen.
+            var fx = (typeof it.offx === "number" ? it.offx : 500) / 1000;
+            var fy = (typeof it.offy === "number" ? it.offy : 500) / 1000;
+            if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height * fy - frame.clientHeight / 2));
+            if (stage) stage.scrollLeft = Math.max(0, r.left + r.width * fx - stage.clientWidth / 2);
             return;
           }
         }
@@ -551,7 +560,7 @@
         if (focusedWithin !== withinIndex || focusedEl !== el) return;
         revealScroll(el);
         var pin = markersLayer.querySelector('.nab-marker[data-within="' + withinIndex + '"]');
-        if (pin) placePinByEl(pin, el);
+        if (pin) placePinByEl(pin, el, it.offx, it.offy);
       });
       return true;
     }
@@ -585,7 +594,7 @@
         var el = NABStage.resolveSelector(doc, it.selector);
         if (el) {
           var r = el.getBoundingClientRect();
-          if (r.width > 0 || r.height > 0) { placePinByEl(pin, el); return true; }
+          if (r.width > 0 || r.height > 0) { placePinByEl(pin, el, it.offx, it.offy); return true; }
         }
       }
       var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
@@ -595,14 +604,18 @@
       return true;
     }
 
-    // Position a pin over a resolved element's rendered centre (used when the
-    // pin's recorded coordinates don't match the revealed layout).
-    function placePinByEl(pin, el) {
+    // Position a pin over a resolved element, at the recorded click point within
+    // it (offx/offy are 0..1000 fractions of the element's box). Pre-offset rows
+    // default to the centre, so historical sessions stay element-centred. Used
+    // whenever the recorded page coordinates don't match the rebuilt layout.
+    function placePinByEl(pin, el, offx, offy) {
       var r = el.getBoundingClientRect();
       var fr = frame.getBoundingClientRect();
       var mr = markersLayer.getBoundingClientRect();
-      pin.style.left = (fr.left - mr.left + r.left + r.width / 2) + "px";
-      pin.style.top = (fr.top - mr.top + r.top + r.height / 2) + "px";
+      var fx = (typeof offx === "number" ? offx : 500) / 1000;
+      var fy = (typeof offy === "number" ? offy : 500) / 1000;
+      pin.style.left = (fr.left - mr.left + r.left + r.width * fx) + "px";
+      pin.style.top = (fr.top - mr.top + r.top + r.height * fy) + "px";
     }
 
     // Align the revealed panel's top-left edge into the stage (rather than
@@ -641,8 +654,8 @@
       var pins = markersLayer.querySelectorAll(".nab-marker");
       for (var i = 0; i < pins.length; i++) {
         var wi = parseInt(pins[i].getAttribute("data-within"), 10);
-        if (wi === focusedWithin && focusedEl) { placePinByEl(pins[i], focusedEl); continue; }
         var it = ints[wi];
+        if (wi === focusedWithin && focusedEl) { placePinByEl(pins[i], focusedEl, it && it.offx, it && it.offy); continue; }
         if (!it) continue;
         placePin(pins[i], it, g, doc);
       }
