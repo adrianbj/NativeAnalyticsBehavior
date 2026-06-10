@@ -165,6 +165,17 @@
     return clone.textContent || "";
   }
 
+  // A control's `value` is only a safe label for button-like inputs, where it's
+  // the caption (e.g. <input type="submit" value="Login">). For text-entry
+  // fields `value` is the user's data — a phone number, email, name — which must
+  // never be captured on this platform; pre-filled account forms carry it
+  // in the attribute, so the rest of the chain must fall through to "" instead.
+  function buttonValue(el) {
+    if (el.nodeName.toLowerCase() !== "input") return "";
+    var t = (el.getAttribute("type") || "").toLowerCase();
+    return (t === "submit" || t === "button" || t === "reset") ? (el.getAttribute("value") || "") : "";
+  }
+
   function clickLabel(el) {
     if (!el || el.nodeType !== 1) return "";
     if (el.closest && el.closest("[data-na-block], [data-na-mask]")) return "";
@@ -174,7 +185,7 @@
       || visibleText(el)
       || fieldLabel(el)
       || el.getAttribute("placeholder")
-      || el.getAttribute("value")
+      || buttonValue(el)
       || "";
     txt = txt.replace(/\s+/g, " ").trim();
     return txt.slice(0, 100);
