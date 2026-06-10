@@ -190,6 +190,24 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return ['fresh' => $fresh, 'pageModified' => $pageModified];
     }
 
+    /**
+     * Server-trusted "page modified" timestamp for a captured path, used to gate
+     * snapshot overwrites without trusting the client. The /nab-snapshot endpoint
+     * is public, so the posted pageModified can't be believed: resolve the path to
+     * a real page and read its own modified time instead. URL-segment / segment
+     * paths don't resolve via get(), so they return null (caller falls back to an
+     * age-only freshness check). Returns 'Y-m-d H:i:s' or null.
+     */
+    protected function pageModifiedForPath($path) {
+        $path = $this->normalizePath((string) $path);
+        try {
+            $p = $this->wire('pages')->get($path);
+        } catch(\Throwable $e) {
+            return null;
+        }
+        return ($p && $p->id && $p->modified) ? date('Y-m-d H:i:s', (int) $p->modified) : null;
+    }
+
     // --- filled in by later tasks ---
     protected function ensureSchema($force = false) {
         static $done = false;
@@ -320,6 +338,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
         // Snapshot capture runs for every tracked visitor — guests and logged-in
         // subscribers alike (staff/superuser are already excluded upstream).
+        // Logged-in pages (story forms, dashboards) are login-gated, so excluding
+        // them would leave those pages with no heatmap backdrop at all; instead we
+        // rely on the masking floor — maskAllInputs redacts every field value and
+        // [data-na-mask]/[data-na-block] redact rendered PII regions.
         // Match the client's window.location.pathname (full path incl. URL
         // segments, site-root prefix) so the freshness check keys on the same
         // path_hash that clicks and the stored snapshot will use.
@@ -546,8 +568,36 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $path = substr($path, 0, 767);
         $width = max(0, min(65535, (int) ($data['capture_width'] ?? 0)));
 
-        $pm = (string) ($data['pageModified'] ?? '');
-        $capturedModified = preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $pm) ? $pm : null;
+        // The freshness marker can't be taken from the client: a forged future
+        // value would pin a spoofed snapshot as permanently "fresh". When the path
+        // resolves to a real page, use that page's modified time; otherwise (URL
+        // segment / segment paths) accept the posted value but never a future one.
+        $now = date('Y-m-d H:i:s');
+        $capturedModified = $this->pageModifiedForPath($path);
+        if($capturedModified === null) {
+            $pm = (string) ($data['pageModified'] ?? '');
+            if(preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $pm) && $pm <= $now) $capturedModified = $pm;
+        }
+
+        $db = $this->wire('database');
+        $pathHash = md5($path);
+
+        // Freshness gate: refuse to overwrite a snapshot that is still fresh. The
+        // endpoint is public, so without this any client could clobber a good
+        // snapshot with a forged DOM. "Fresh" matches snapshotFreshnessForPath():
+        // within the backstop window AND captured no older than the page's edit.
+        // A real refresh still happens once the page is edited (its modified
+        // advances past the stored marker) or the snapshot ages out.
+        $cutoff = date('Y-m-d H:i:s', strtotime('-' . self::SNAPSHOT_BACKSTOP_DAYS . ' days'));
+        $existing = $db->prepare("SELECT `captured_modified`,`captured_at`
+            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:device LIMIT 1");
+        $existing->execute([':ph' => $pathHash, ':device' => $device]);
+        if($row = $existing->fetch(\PDO::FETCH_ASSOC)) {
+            $ageOk = ((string) $row['captured_at']) >= $cutoff;
+            $modOk = ($capturedModified === null)
+                || ($row['captured_modified'] !== null && ((string) $row['captured_modified']) >= $capturedModified);
+            if($ageOk && $modOk) $this->sendJson(200, ['ok' => true, 'fresh' => true]);
+        }
 
         // JSON_HEX_TAG escapes < and > so the stored DOM can be safely embedded in a
         // <script type="application/json"> block on the admin dashboard; without it,
@@ -557,7 +607,6 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $gz = gzencode($domJson, 6);
         if($gz === false) $this->sendJson(500, ['ok' => false]);
 
-        $db = $this->wire('database');
         $sql = "INSERT INTO `" . self::SNAPSHOT_TABLE . "`
             (`path`,`path_hash`,`device`,`capture_width`,`captured_modified`,`captured_at`,`dom_gz`)
             VALUES (:path,:ph,:device,:w,:cm,:now,:dom)
@@ -567,12 +616,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
               `dom_gz`=VALUES(`dom_gz`)";
         $stmt = $db->prepare($sql);
         $stmt->bindValue(':path', $path);
-        $stmt->bindValue(':ph', md5($path));
+        $stmt->bindValue(':ph', $pathHash);
         $stmt->bindValue(':device', $device);
         $stmt->bindValue(':w', $width, \PDO::PARAM_INT);
         if($capturedModified === null) $stmt->bindValue(':cm', null, \PDO::PARAM_NULL);
         else $stmt->bindValue(':cm', $capturedModified);
-        $stmt->bindValue(':now', date('Y-m-d H:i:s'));
+        $stmt->bindValue(':now', $now);
         $stmt->bindValue(':dom', $gz, \PDO::PARAM_LOB);
         $stmt->execute();
 
