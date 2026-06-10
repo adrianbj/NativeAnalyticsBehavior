@@ -400,12 +400,29 @@
     function scrollToWithin(p, withinIndex) {
       if (!p || !p.has_backdrop || withinIndex < 0) return;
       var it = (p.interactions || [])[withinIndex];
-      if (!it || !it.dh) return;
+      if (!it) return;
+      var win = frame.contentWindow;
+      // Prefer scrolling to the clicked element (pins are anchored to it), so the
+      // highlighted pin lands centred even when the recorded coordinates drift
+      // from the rebuilt layout. Fall back to those coordinates when the selector
+      // no longer resolves.
+      var doc = frameDoc();
+      if (doc && it.selector) {
+        var el = NABStage.resolveSelector(doc, it.selector);
+        if (el) {
+          var r = el.getBoundingClientRect();
+          if (r.width > 0 || r.height > 0) {
+            if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height / 2 - frame.clientHeight / 2));
+            if (stage) stage.scrollLeft = Math.max(0, stage.scrollLeft + r.left + r.width / 2 - stage.clientWidth / 2);
+            return;
+          }
+        }
+      }
+      if (!it.dh) return;
       var g = NABStage.geom(frame, markersLayer);
       if (!g) return;
       var docY = (it.y_px / it.dh) * g.fullH;
       var docX = (it.x_frac / 1000) * g.fullW;
-      var win = frame.contentWindow;
       if (win) win.scrollTo(0, Math.max(0, docY - frame.clientHeight / 2));
       if (stage) stage.scrollLeft = Math.max(0, docX - stage.clientWidth / 2);
     }
@@ -429,12 +446,10 @@
       var ints = p.interactions || [];
       var g = NABStage.geom(frame, markersLayer);
       if (!g) return;
+      var doc = frameDoc();
       ints.forEach(function (it, ii) {
-        var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
-        if (!pt) return;
         var pin = makePin(p, it, ii);
-        pin.style.left = pt.x + "px";
-        pin.style.top = pt.y + "px";
+        if (!placePin(pin, it, g, doc)) return;
         markersLayer.appendChild(pin);
       });
       if (p.more) {
@@ -558,6 +573,28 @@
       return found;
     }
 
+    // Position a pin. Prefer anchoring to the clicked element resolved in the
+    // rebuilt backdrop (its rendered layout differs from the live page the
+    // coordinates were recorded against, so the recorded x/y drift); fall back
+    // to those coordinates only when the selector no longer resolves (element
+    // absent or restructured) or has no rendered box (hidden in a closed panel,
+    // which the reveal logic re-anchors separately). Returns false when neither
+    // method can place it.
+    function placePin(pin, it, g, doc) {
+      if (doc && it.selector) {
+        var el = NABStage.resolveSelector(doc, it.selector);
+        if (el) {
+          var r = el.getBoundingClientRect();
+          if (r.width > 0 || r.height > 0) { placePinByEl(pin, el); return true; }
+        }
+      }
+      var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
+      if (!pt) return false;
+      pin.style.left = pt.x + "px";
+      pin.style.top = pt.y + "px";
+      return true;
+    }
+
     // Position a pin over a resolved element's rendered centre (used when the
     // pin's recorded coordinates don't match the revealed layout).
     function placePinByEl(pin, el) {
@@ -600,16 +637,14 @@
       var ints = p.interactions || [];
       var g = NABStage.geom(frame, markersLayer);
       if (!g) return;
+      var doc = frameDoc();
       var pins = markersLayer.querySelectorAll(".nab-marker");
       for (var i = 0; i < pins.length; i++) {
         var wi = parseInt(pins[i].getAttribute("data-within"), 10);
         if (wi === focusedWithin && focusedEl) { placePinByEl(pins[i], focusedEl); continue; }
         var it = ints[wi];
         if (!it) continue;
-        var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
-        if (!pt) continue;
-        pins[i].style.left = pt.x + "px";
-        pins[i].style.top = pt.y + "px";
+        placePin(pins[i], it, g, doc);
       }
     }
 
