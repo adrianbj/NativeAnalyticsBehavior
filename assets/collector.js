@@ -220,6 +220,15 @@
     return near >= RAGE_MIN;
   }
 
+  // Double/triple-clicking to select text produces the same same-spot click
+  // cluster as rage and lands on non-interactive text (so it also reads as
+  // "dead"). If the click left an active text selection, it's a copy gesture,
+  // not frustration — suppress both flags so the heatmap isn't polluted.
+  function hasTextSelection() {
+    var sel = window.getSelection ? window.getSelection() : null;
+    return !!(sel && !sel.isCollapsed && String(sel).length > 0);
+  }
+
   function docWidth() {
     return Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0, window.innerWidth || 0);
   }
@@ -237,6 +246,7 @@
     var dw = docWidth() || 1;
     var xFrac = Math.max(0, Math.min(1000, Math.round((e.pageX / dw) * 1000)));
     var target = resolveTarget(e.target);
+    var selecting = hasTextSelection();
     queue.push({
       type: "click",
       path: path,
@@ -247,8 +257,8 @@
       dh: Math.round(docHeight()),
       selector: cssSelector(e.target),
       label: clickLabel(target),
-      dead: isDeadClick(e.target) ? 1 : 0,
-      rage: isRageClick(Date.now(), e.pageX, e.pageY) ? 1 : 0,
+      dead: (!selecting && isDeadClick(e.target)) ? 1 : 0,
+      rage: (!selecting && isRageClick(Date.now(), e.pageX, e.pageY)) ? 1 : 0,
       visitorId: visitorId,
       sessionId: sessionId
     });
