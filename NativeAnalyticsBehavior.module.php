@@ -19,6 +19,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         'excludedPaths' => '',    // newline-separated path prefixes
         'excludedTemplates' => '', // newline-separated template names
         'blockedIps' => '',       // newline-separated IPs
+        'excludeNaBots' => 1,     // hide sessions NativeAnalytics flagged as bots
     ];
 
     public static function getModuleInfo() {
@@ -213,12 +214,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0,
             `visitor_hash` CHAR(64) NOT NULL DEFAULT '',
             `session_hash` CHAR(64) NOT NULL DEFAULT '',
+            `na_session_hash` CHAR(64) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`),
             KEY `created_at` (`created_at`),
             KEY `created_date` (`created_date`),
             KEY `type_path_device` (`type`, `path_hash`, `device`),
             KEY `visitor_hash` (`visitor_hash`),
-            KEY `session_hash` (`session_hash`)
+            KEY `session_hash` (`session_hash`),
+            KEY `na_session_hash` (`na_session_hash`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $db->exec("CREATE TABLE IF NOT EXISTS `" . self::SNAPSHOT_TABLE . "` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -248,6 +251,16 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'rage'");
         if($col && $col->rowCount() === 0) {
             $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `rage` TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER `dead`");
+        }
+        // `na_session_hash` shipped with the bot-flag reuse: the session hash under
+        // NativeAnalytics' salt so we can exclude sessions NA flagged as bots. Add
+        // it (and its index) idempotently on existing installs. Pre-existing rows
+        // keep '' and are never treated as bots — we never stored the raw IDs to
+        // re-derive the NA-salted hash, so the filter is forward-only by design.
+        $col = $db->query("SHOW COLUMNS FROM `" . self::EVENTS_TABLE . "` LIKE 'na_session_hash'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `na_session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`");
+            $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD KEY `na_session_hash` (`na_session_hash`)");
         }
         $done = true;
     }
@@ -358,6 +371,76 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return hash('sha256', (string) $this->get('hashSalt') . '|' . $value);
     }
 
+    /**
+     * NativeAnalytics' effective hash salt, read from the live module instance
+     * (NA is autoload and sets this in init()/ready(), so it is populated by the
+     * time ingest runs). Cached per request. Returns '' if NA is unavailable.
+     * This is deliberately NOT our own hashSalt: matching NA's salt is what lets
+     * a session hash here line up with NA's session_hash for the bot-flag join.
+     */
+    protected function naHashSalt() {
+        static $salt = null;
+        if($salt !== null) return $salt;
+        $salt = '';
+        $modules = $this->wire('modules');
+        if($modules->isInstalled('NativeAnalytics')) {
+            $na = $modules->get('NativeAnalytics');
+            if($na) $salt = (string) $na->get('hashSalt');
+        }
+        return $salt;
+    }
+
+    /**
+     * Session hash under NA's salt, matching NativeAnalytics::hashValue() exactly
+     * (sha256 of salt . '|' . rawId). Used only to join our rows to NA's bot
+     * flags. Returns '' when the raw id or NA's salt is missing, in which case
+     * the row is never excluded as a bot.
+     */
+    protected function naSessionHash($sessionId) {
+        $sessionId = trim((string) $sessionId);
+        $salt = $this->naHashSalt();
+        if($sessionId === '' || $salt === '') return '';
+        return hash('sha256', $salt . '|' . $sessionId);
+    }
+
+    /**
+     * WHERE fragment (with a leading AND) that drops rows whose session
+     * NativeAnalytics flagged as a bot, for appending to any events query.
+     * Returns '' (no filtering) when the toggle is off or NA's hits table is
+     * absent, so the dashboard degrades gracefully. Evaluated at query time
+     * against the live flags, so NA's hourly classifier backfilling is_bot is
+     * reflected on the next dashboard load with no sync job here.
+     *
+     * The filter only excludes rows POSITIVELY matched as a bot: a row with an
+     * empty na_session_hash (anything stored before this shipped) has no NA-salt
+     * hash to match and is always kept. The IN form (rather than NOT IN) also
+     * sidesteps the NULL-in-subquery trap. The bot-session subquery is on a
+     * separate table so there is no column-name collision with na_session_hash.
+     */
+    protected function botExclusionSql() {
+        static $sql = null;
+        if($sql !== null) return $sql;
+        $sql = '';
+        if(empty($this->excludeNaBots)) return $sql;
+        $db = $this->wire('database');
+        $t = $db->query("SHOW TABLES LIKE 'pwna_hits'");
+        if(!$t || $t->rowCount() === 0) return $sql;
+        // na_session_hash and pwna_hits.session_hash were created under different
+        // table-default collations (utf8mb4_0900_ai_ci vs utf8mb4_general_ci), so a
+        // bare IN comparison raises error 1267. Force na_session_hash to the live
+        // collation of pwna_hits.session_hash so the comparison is well-defined.
+        $collate = '';
+        $col = $db->query("SHOW FULL COLUMNS FROM `pwna_hits` LIKE 'session_hash'");
+        if($col && $col->rowCount() > 0) {
+            $row = $col->fetch(\PDO::FETCH_ASSOC);
+            $c = isset($row['Collation']) ? (string) $row['Collation'] : '';
+            if($c !== '' && preg_match('/^[A-Za-z0-9_]+$/', $c)) $collate = " COLLATE $c";
+        }
+        $sql = " AND NOT (`na_session_hash` <> '' AND `na_session_hash`$collate IN ("
+             . "SELECT `session_hash` FROM `pwna_hits` WHERE `is_bot`=1 AND `session_hash` <> ''))";
+        return $sql;
+    }
+
     protected function handleCollectRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
         if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
@@ -376,8 +459,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
 
         $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
-            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`dead`,`rage`,`visitor_hash`,`session_hash`)
-            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:dead,:rage,:visitor_hash,:session_hash)";
+            (`created_at`,`created_date`,`type`,`path`,`path_hash`,`device`,`x_frac`,`y_px`,`vw`,`dh`,`scroll_pct`,`selector`,`label`,`dead`,`rage`,`visitor_hash`,`session_hash`,`na_session_hash`)
+            VALUES (:created_at,:created_date,:type,:path,:path_hash,:device,:x_frac,:y_px,:vw,:dh,:scroll_pct,:selector,:label,:dead,:rage,:visitor_hash,:session_hash,:na_session_hash)";
         $stmt = $db->prepare($sql);
         // Scroll depth is re-sent on every flush so it survives a missed
         // pagehide; keep one max-depth row per (session, path, device) rather
@@ -399,7 +482,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $pathHash = md5($path);
             $device = (string) ($ev['device'] ?? '');
             if(!in_array($device, $allowedDevices, true)) $device = 'desktop';
-            $sessionHash = $this->hashId($ev['sessionId'] ?? '');
+            $rawSessionId = $ev['sessionId'] ?? '';
+            $sessionHash = $this->hashId($rawSessionId);
+            $naSessionHash = $this->naSessionHash($rawSessionId);
             $scrollPct = max(0, min(100, (int) ($ev['scroll_pct'] ?? 0)));
 
             if($type === 'scroll' && $sessionHash !== '') {
@@ -431,6 +516,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ':rage' => !empty($ev['rage']) ? 1 : 0,
                 ':visitor_hash' => $this->hashId($ev['visitorId'] ?? ''),
                 ':session_hash' => $sessionHash,
+                ':na_session_hash' => $naSessionHash,
             ]);
             $inserted++;
         }
@@ -568,7 +654,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $sql = "SELECT FLOOR(`x_frac`/10) AS x_bucket, FLOOR(`y_px`/20) AS y_bucket, COUNT(*) AS c, MAX(`dh`) AS dh
             FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
-              AND `created_date` BETWEEN :from AND :to
+              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
             GROUP BY x_bucket, y_bucket";
         $stmt = $db->prepare($sql);
         $stmt->execute([
@@ -611,7 +697,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     public function getDeviceEventCounts($path, $fromDate, $toDate) {
         $db = $this->wire('database');
         $stmt = $db->prepare("SELECT `device`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
             GROUP BY `device`");
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
@@ -631,7 +717,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $ph = md5('/' . ltrim((string) $path, '/'));
         $stmt = $db->prepare("SELECT `device` FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `selector` <> ''
-              AND `created_date` BETWEEN :from AND :to
+              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
             GROUP BY `device` ORDER BY COUNT(*) DESC LIMIT 1");
         $stmt->execute([
             ':ph' => $ph,
@@ -658,7 +744,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $db = $this->wire('database');
         $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
-              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
             GROUP BY `selector` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([
@@ -679,7 +765,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $sql = "SELECT FLOOR(`scroll_pct`/10) AS depth_bucket, COUNT(*) AS c
             FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='scroll' AND `path_hash`=:ph AND `device`=:dev
-              AND `created_date` BETWEEN :from AND :to
+              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
             GROUP BY depth_bucket";
         $stmt = $db->prepare($sql);
         $stmt->execute([
@@ -706,7 +792,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $db = $this->wire('database');
         $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `$col`=1 AND `path_hash`=:ph AND `device`=:dev
-              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
             GROUP BY `selector` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([
@@ -738,7 +824,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $limit = max(1, min(20000, (int) $limit));
         $sql = "SELECT `x_frac`, `y_px`, `dh` FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
-              AND `created_date` BETWEEN :from AND :to AND `dh` > 0
+              AND `created_date` BETWEEN :from AND :to AND `dh` > 0" . $this->botExclusionSql() . "
             ORDER BY `id` DESC LIMIT $limit";
         $stmt = $db->prepare($sql);
         $stmt->execute([
@@ -801,6 +887,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $f->name = 'blockedIps';
         $f->label = 'Blocked IPs (one per line)';
         $f->value = (string) $data['blockedIps'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = 'excludeNaBots';
+        $f->label = 'Exclude NativeAnalytics bot sessions';
+        $f->label2 = 'Hide clicks and scrolls from sessions NativeAnalytics has flagged as bots';
+        $f->description = "Reuses NativeAnalytics' bot determination (UA detection plus its hourly behavioral classifier). Only sessions recorded after this setting shipped carry the matching hash, so older rows are always shown.";
+        $f->attr('checked', !empty($data['excludeNaBots']));
         $wrap->add($f);
 
         return $wrap;
