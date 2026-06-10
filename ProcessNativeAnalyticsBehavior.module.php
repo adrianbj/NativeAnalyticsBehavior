@@ -111,6 +111,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
+        $copies = $this->core->getCopySelectorHeatmap($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
         $coords = $this->core->getClickCoordinates($path, $device, $from, $to);
         $deadClicks = $this->core->getDeadClicks($path, $device, $from, $to);
@@ -204,6 +205,20 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($clicks, 0, 20) as $c) {
+                $label = trim((string) ($c['label'] ?? ''));
+                $cell = $label !== ''
+                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
+                    : '<code class="nab-click-sel">' . $sanitizer->entities($c['selector']) . '</code>';
+                $out .= '<tr><td>' . $cell . '</td>'
+                    . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
+            }
+            $out .= '</tbody></table>';
+        }
+        if($copies) {
+            $out .= '<h3 class="nab-frust-title">Most copied</h3>';
+            $out .= '<table class="nab-click-table uk-table uk-table-small uk-table-divider">';
+            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Copies</th></tr></thead><tbody>';
+            foreach(array_slice($copies, 0, 20) as $c) {
                 $label = trim((string) ($c['label'] ?? ''));
                 $cell = $label !== ''
                     ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'

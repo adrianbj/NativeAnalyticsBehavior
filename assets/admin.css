@@ -17,7 +17,11 @@
 .nab-presets { display: inline-flex; gap: .3em; }
 .nab-tables { display: flex; gap: 1.5em; flex-wrap: wrap; margin: 1.5em 0; }
 .nab-tables-col { flex: 1 1 0; min-width: 280px; }
-.nab-click-table { margin: 0; }
+.nab-click-table { margin: 0; border: 1px solid #e5e5e5; }
+.nab-click-table thead th { background: #f5f5f5; }
+/* Stacked left-column tables (Most clicked / Most copied) sit flush otherwise;
+   space the second table's heading off the first table. */
+.nab-click-table + .nab-frust-title { margin-top: 1.5em; }
 .nab-click-table .nab-click-label { display: block; }
 .nab-click-table .nab-click-sel { display: block; word-break: break-all; font-size: .8em; color: #888; }
 .nab-click-table .nab-click-num { text-align: right; white-space: nowrap; width: 6em; }

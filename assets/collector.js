@@ -293,6 +293,62 @@
     if (queue.length >= 20) flush(false);
   }
 
+  // Resolve the element a copy gesture lifted text from. Inputs/textareas keep
+  // their selection in selectionStart/End (not window.getSelection), so check the
+  // focused field first; otherwise walk the live selection's common ancestor up
+  // to its nearest element. We never read the copied text itself — only which
+  // element it came from — so nothing the visitor copied is ever stored.
+  function copySource() {
+    var ae = document.activeElement;
+    if (ae && (ae.nodeName === "INPUT" || ae.nodeName === "TEXTAREA") &&
+        typeof ae.selectionStart === "number" && ae.selectionStart !== ae.selectionEnd) {
+      return ae;
+    }
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    var node = sel.getRangeAt(0).commonAncestorContainer;
+    if (node && node.nodeType !== 1) node = node.parentElement;
+    return node && node.nodeType === 1 ? node : null;
+  }
+
+  // Position the copy where the selection sits (so density mode pins it to the
+  // copied text), falling back to the source element's box for input copies.
+  function copyRect(srcEl) {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (sel && sel.rangeCount > 0) {
+      var r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r && (r.width || r.height)) return r;
+    }
+    return srcEl.getBoundingClientRect();
+  }
+
+  function recordCopy() {
+    var src = copySource();
+    if (!src || isIgnoredClick(src)) return;
+    var target = resolveTarget(src);
+    var rect = copyRect(src);
+    var dw = docWidth() || 1;
+    var sx = window.pageXOffset || document.documentElement.scrollLeft || 0;
+    var sy = window.pageYOffset || document.documentElement.scrollTop || 0;
+    var pageX = rect.left + sx + rect.width / 2;
+    var pageY = rect.top + sy + rect.height / 2;
+    var xFrac = Math.max(0, Math.min(1000, Math.round((pageX / dw) * 1000)));
+    queue.push({
+      type: "copy",
+      path: path,
+      device: deviceClass(),
+      x_frac: xFrac,
+      y_px: Math.round(pageY),
+      vw: Math.round(window.innerWidth || 0),
+      dh: Math.round(docHeight()),
+      selector: cssSelector(src),
+      label: clickLabel(target),
+      visitorId: visitorId,
+      sessionId: sessionId
+    });
+    if (queue.length >= 20) flush(false);
+  }
+
   function trackScroll() {
     var st = window.pageYOffset || document.documentElement.scrollTop || 0;
     var vh = window.innerHeight || document.documentElement.clientHeight || 0;
@@ -398,6 +454,7 @@
   }
 
   document.addEventListener("click", recordClick, true);
+  document.addEventListener("copy", recordCopy, true);
   window.addEventListener("scroll", trackScroll, { passive: true });
   setInterval(function () { flush(true); }, 10000);
   window.addEventListener("pagehide", function () { flush(true); });

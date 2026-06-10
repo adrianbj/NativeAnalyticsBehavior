@@ -460,7 +460,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $db = $this->wire('database');
         $now = date('Y-m-d H:i:s');
         $today = date('Y-m-d');
-        $allowedTypes = ['click', 'scroll'];
+        $allowedTypes = ['click', 'scroll', 'copy'];
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
 
         $sql = "INSERT INTO `" . self::EVENTS_TABLE . "`
@@ -771,6 +771,28 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $db = $this->wire('database');
         $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
+            GROUP BY `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Copy counts grouped by CSS selector for a path/device/date range. Mirrors
+     * getClickSelectorHeatmap but for `type='copy'` events: which elements
+     * visitors copied text from, by frequency. The copied text itself is never
+     * stored — only the source element's selector and the same label clicks use.
+     */
+    public function getCopySelectorHeatmap($path, $device, $fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='copy' AND `path_hash`=:ph AND `device`=:dev
               AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
             GROUP BY `selector` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
