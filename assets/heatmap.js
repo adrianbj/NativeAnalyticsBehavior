@@ -25,83 +25,104 @@
     // capture, but snapshots stored before that shipped still carry them, so
     // strip them from the serialized tree here too — before rebuild, since the
     // execution attempt happens as each node is built.
-    stripSnapshotScripts(snap);
+    NABStage.stripScripts(snap);
 
     var clicks = data.clicks || [];
     var scroll = data.scroll || [];
     var coords = data.coords || [];
     var captureWidth = parseInt(data.captureWidth, 10) || 1280;
     var heatMode = "outlines";
-
-    // Recursively drop <script> element nodes from an rrweb-snapshot tree
-    // (NodeType 2 = Element). Mirrors the collector's capture-time strip so
-    // snapshots stored before that existed are also safe to rebuild.
-    function stripSnapshotScripts(n) {
-      if (!n || !n.childNodes || !n.childNodes.length) return;
-      n.childNodes = n.childNodes.filter(function (c) {
-        return !(c && c.type === 2 && c.tagName === "script");
-      });
-      for (var i = 0; i < n.childNodes.length; i++) stripSnapshotScripts(n.childNodes[i]);
-    }
+    var focusEl = null;       // element currently flashed via a table-row click
+    var focusTimer = null;
+    var revealRestore = null; // undoes any off-canvas reveal done for the focus
 
     function rebuildInto(doc) {
-      try {
-        doc.open();
-        doc.write("<!DOCTYPE html><html><head></head><body></body></html>");
-        doc.close();
-      } catch (e) {}
-      if (!window.rrwebSnapshot || !window.rrwebSnapshot.rebuild) return false;
-      try {
-        window.rrwebSnapshot.rebuild(snap, { doc: doc });
-      } catch (e) { return false; }
-      // The page was captured with scripting on, so <noscript> blocks (e.g. the
-      // GTM fallback iframe) were stored as inert text. This iframe replays them
-      // with scripting off, which makes the browser render that text visibly.
-      // Drop them — they're irrelevant to the heatmap backdrop.
-      var noscripts = doc.querySelectorAll("noscript");
-      for (var n = 0; n < noscripts.length; n++) {
-        if (noscripts[n].parentNode) noscripts[n].parentNode.removeChild(noscripts[n]);
-      }
-      // The iframe's vertical scrollbar (classic ~15px on desktop) eats into the
-      // viewport width, so full-width (100vw) elements captured on a scrollbar-
-      // less mobile viewport overflow horizontally and add a spurious horizontal
-      // scrollbar. Clip that overflow with overflow-x:hidden — the few stray px
-      // are an artifact, not real content. overflow-y computes to auto, so the
-      // vertical scrollbar stays visible as the scroll affordance.
-      var head = doc.head || doc.getElementsByTagName("head")[0];
-      if (head) {
-        var style = doc.createElement("style");
-        style.textContent = "html{overflow-x:hidden}";
-        head.appendChild(style);
-      }
-      return true;
+      return NABStage.rebuild(doc, snap);
     }
 
     function frameDoc() {
       return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
     }
 
-    // Resolve a recorded selector against the backdrop, tolerating ancestor
-    // drift. The full path can fail when the snapshot's ancestor structure
-    // differs from the page at click time (UIKit wrapper nodes, nth-child
-    // shifts) even though the clicked element is still present. Fall back to the
-    // longest right-anchored suffix that pins exactly one element — a unique
-    // match is the same element; an ambiguous one is left unmatched rather than
-    // risk drawing heat on the wrong node.
-    function resolveSelector(doc, sel) {
-      if (!sel) return null;
-      try {
-        var el = doc.querySelector(sel);
-        if (el) return el;
-      } catch (e) {}
-      var segs = sel.split(" > ");
-      for (var k = 1; k < segs.length; k++) {
-        var suffix = segs.slice(k).join(" > ");
-        var matches;
-        try { matches = doc.querySelectorAll(suffix); } catch (e) { matches = null; }
-        if (matches && matches.length === 1) return matches[0];
+    // Scroll the iframe (vertical) and stage (horizontal) so an element resolved
+    // in the backdrop lands roughly centred in the visible window. Rects are read
+    // before scrolling, so they're relative to the current iframe/stage viewport.
+    function scrollToElement(el) {
+      if (!el) return;
+      var r = el.getBoundingClientRect();
+      var win = frame.contentWindow;
+      if (win) {
+        var targetY = (win.pageYOffset || 0) + r.top + r.height / 2 - frame.clientHeight / 2;
+        win.scrollTo(0, Math.max(0, targetY));
       }
-      return null;
+      var stage = canvas.parentNode;
+      if (stage) {
+        var targetX = stage.scrollLeft + r.left + r.width / 2 - stage.clientWidth / 2;
+        stage.scrollLeft = Math.max(0, targetX);
+        // The element is now centred inside the iframe, but the stage itself may
+        // sit below the admin-page fold (the tables are above it). Scroll the
+        // outer page so the stage — and thus the centred element — is on screen.
+        if (stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+
+    // Scroll an element into view and flash a highlight box around it for a few
+    // seconds. Used when an admin clicks a row in any of the tables. The box is
+    // painted by drawHeat (so it tracks scroll); the timer clears it and redraws.
+    function focusElement(el) {
+      if (!el) return;
+      clearReveal();
+      // If the element is hidden (e.g. inside a closed off-canvas menu the
+      // scriptless iframe can't open), force its panel visible so it can be seen.
+      if (NABStage.isHidden(el)) revealRestore = NABStage.reveal(el, frame.contentWindow);
+      focusEl = el;
+      scrollToElement(el);
+      drawHeat();
+      if (focusTimer) clearTimeout(focusTimer);
+      focusTimer = setTimeout(function () { focusEl = null; clearReveal(); drawHeat(); }, 2500);
+    }
+
+    function clearReveal() {
+      if (revealRestore) { revealRestore(); revealRestore = null; }
+    }
+
+    function focusSelector(sel) {
+      var doc = frameDoc();
+      if (!doc) return;
+      focusElement(NABStage.resolveSelector(doc, sel));
+    }
+
+    // Bright box around the currently focused element, drawn on top of the heat so
+    // a table-row click is easy to spot. Re-run by drawHeat on every scroll.
+    function drawFocus(ctx, ox, oy) {
+      if (!focusEl) return;
+      var r = focusEl.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return;
+      ctx.save();
+      ctx.strokeStyle = "#0C7896";
+      ctx.setLineDash([]);
+      ctx.lineWidth = 4;
+      ctx.strokeRect(r.left + ox - 2, r.top + oy - 2, r.width + 4, r.height + 4);
+      ctx.restore();
+    }
+
+    // Wire the server-rendered table rows (Most clicked / copied / frustration)
+    // so clicking one scrolls the backdrop to that element. Each row carries its
+    // recorded selector in data-nab-sel. Section-reach rows are wired separately
+    // in renderSectionTable (they hold a live element reference, not a selector).
+    function bindTableLinks() {
+      var rows = document.querySelectorAll("[data-nab-sel]");
+      for (var i = 0; i < rows.length; i++) {
+        bindSelectorRow(rows[i]);
+      }
+    }
+    function bindSelectorRow(row) {
+      var sel = row.getAttribute("data-nab-sel");
+      if (!sel) return;
+      row.addEventListener("click", function () { focusSelector(sel); });
+      row.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusSelector(sel); }
+      });
     }
 
     // Cold-to-hot ramp for click volume: blue (cold) -> cyan -> green -> amber
@@ -200,6 +221,7 @@
       if (heatMode === "density") {
         drawDensity(ctx, w, h, ox, oy);
         drawScrollLines(ctx, w, h, oy);
+        drawFocus(ctx, ox, oy);
         renderLegend(null);
         var dstatus = document.getElementById("nab-unmatched");
         if (dstatus) dstatus.textContent = "";
@@ -219,7 +241,7 @@
       for (i = 0; i < clicks.length; i++) {
         var sel = clicks[i].selector;
         var count = parseInt(clicks[i].c, 10) || 0;
-        var el = resolveSelector(doc, sel);
+        var el = NABStage.resolveSelector(doc, sel);
         if (!el) { unmatched += count; continue; }
         var r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) continue;
@@ -235,6 +257,7 @@
       }
 
       drawScrollLines(ctx, w, h, oy);
+      drawFocus(ctx, ox, oy);
 
       var status = document.getElementById("nab-unmatched");
       if (status) {
@@ -367,28 +390,24 @@
       if (!coords.length) return;
       var doc = frameDoc();
       if (!doc) return;
-      var root = doc.documentElement, body = doc.body;
-      var fullH = Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0);
-      var fullW = Math.max(root ? root.scrollWidth : 0, body ? body.scrollWidth : 0);
-      if (!fullH || !fullW) return;
-      var win = frame.contentWindow;
-      var sy = (win && win.pageYOffset) || (root && root.scrollTop) || 0;
-      var sx = (win && win.pageXOffset) || (root && root.scrollLeft) || 0;
+      var g = NABStage.geom(frame, canvas);
+      if (!g) return;
+      var fullW = g.fullW, fullH = g.fullH;
 
       var off = document.createElement("canvas");
       off.width = w;
       off.height = h;
       var octx = off.getContext("2d");
-      var i, c, dh, x, y;
+      var i, c, dh, pt;
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
         dh = c[2] || 0;
         if (dh <= 0) continue;
-        x = (c[0] / 1000) * fullW - sx + ox;
-        y = (c[1] / dh) * fullH - sy + oy;
-        if (x < -DENSITY_RADIUS || x > w + DENSITY_RADIUS) continue;
-        if (y < -DENSITY_RADIUS || y > h + DENSITY_RADIUS) continue;
-        paintBlob(octx, x, y, DENSITY_RADIUS);
+        pt = NABStage.point(g, c[0], c[1], dh);
+        if (!pt) continue;
+        if (pt.x < -DENSITY_RADIUS || pt.x > w + DENSITY_RADIUS) continue;
+        if (pt.y < -DENSITY_RADIUS || pt.y > h + DENSITY_RADIUS) continue;
+        paintBlob(octx, pt.x, pt.y, DENSITY_RADIUS);
       }
 
       var img = octx.getImageData(0, 0, w, h);
@@ -519,7 +538,8 @@
         rows.push({
           label: label,
           pct: Math.round((reached / total) * 100),
-          level: el.nodeName.toLowerCase() === "h2" ? 2 : 1
+          level: el.nodeName.toLowerCase() === "h2" ? 2 : 1,
+          el: el
         });
       }
       renderSectionTable(container, rows);
@@ -544,10 +564,23 @@
         tdN.textContent = rows[i].pct + "%";
         tr.appendChild(tdL);
         tr.appendChild(tdN);
+        bindSectionRow(tr, rows[i].el);
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
       container.appendChild(table);
+    }
+
+    // Section-reach rows hold a live heading/form element, so they scroll to it
+    // directly (no selector to resolve).
+    function bindSectionRow(tr, el) {
+      if (!el) return;
+      tr.className = "nab-click-row";
+      tr.setAttribute("tabindex", "0");
+      tr.addEventListener("click", function () { focusElement(el); });
+      tr.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusElement(el); }
+      });
     }
 
     function bindFrameScroll() {
@@ -601,6 +634,7 @@
       // couple more times as images load and shift box positions.
       bindHeatToggle();
       bindModeSwitch();
+      bindTableLinks();
       setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);

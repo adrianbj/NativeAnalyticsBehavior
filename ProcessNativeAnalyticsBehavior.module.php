@@ -41,7 +41,6 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $this->wire('config')->styles->add($na->getAssetUrl('assets/admin.css') . '?v=' . rawurlencode($na->getAssetVersion('assets/admin.css')));
         }
         $this->wire('config')->styles->add($this->core->getVersionedAssetUrl('assets/admin.css'));
-        $this->wire('config')->scripts->add($this->core->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js'));
     }
 
     public function ___execute() {
@@ -55,6 +54,69 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
         $term = $this->wire('sanitizer')->text($this->wire('input')->get('q'));
         $this->sendJsonResponse($this->core->searchTrackedPaths($term, 20));
+    }
+
+    // AJAX: sessions that visited ?path within ?from..?to, as JSON. Backs the
+    // "Sessions on this page" panel. Page permission gates access.
+    public function ___executeSessionList() {
+        if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $input = $this->wire('input');
+        $sanitizer = $this->wire('sanitizer');
+        $path = $sanitizer->text($input->get('path'));
+        if($path === '') $path = '/';
+        $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-29 days'));
+        $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
+        $rows = $this->core->getSessionsForPath($path, $from, $to, 50);
+        $total = $this->core->countSessionsForPath($path, $from, $to);
+        $sessions = [];
+        foreach($rows as $r) {
+            $h = (string) $r['session_hash'];
+            $r['hash_short'] = $h !== '' ? substr($h, 0, 8) : '';
+            $sessions[] = $r;
+        }
+        $this->sendJsonResponse(['sessions' => $sessions, 'total' => $total, 'showing' => count($sessions)]);
+    }
+
+    // AJAX: one session's full cross-page journey with per-page interactions, as
+    // JSON. ?session must be a 64-char hex hash (400 otherwise).
+    public function ___executeSessionJourney() {
+        if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $session = (string) $this->wire('input')->get('session');
+        if(!preg_match('/^[a-f0-9]{64}$/', $session)) {
+            http_response_code(400);
+            $this->sendJsonResponse(['error' => 'invalid session']);
+        }
+        $journey = $this->core->getSessionJourney($session);
+        if($journey === null) {
+            $this->sendJsonResponse(['error' => 'not found', 'pages' => []]);
+        }
+        $device = (string) $journey['device'];
+        foreach($journey['pages'] as &$p) {
+            $rows = $this->core->getSessionInteractions($session, $p['path_hash'], $device, 200);
+            $p['interactions'] = $rows;
+            $p['more'] = max(0, (int) $p['interaction_count'] - count($rows));
+        }
+        unset($p);
+        $this->sendJsonResponse($journey);
+    }
+
+    // AJAX: the stored masked backdrop for ?path + ?device, as JSON. `dom` is the
+    // snapshot JSON as a string (the client JSON.parses it, mirroring how
+    // heatmap.js reads the inline #nab-snapshot block). {none:true} when absent.
+    public function ___executeSnapshot() {
+        if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $input = $this->wire('input');
+        $sanitizer = $this->wire('sanitizer');
+        $path = $sanitizer->text($input->get('path'));
+        $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile']) ?: 'desktop';
+        if($path === '') $this->sendJsonResponse(['none' => true]);
+        $snap = $this->core->getSnapshot($path, $device);
+        if(!$snap) $this->sendJsonResponse(['none' => true]);
+        $this->sendJsonResponse([
+            'dom' => $snap['dom'],
+            'capture_width' => (int) $snap['capture_width'],
+            'captured_at' => (string) $snap['captured_at'],
+        ]);
     }
 
     protected function sendJsonResponse($data) {
@@ -81,10 +143,20 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $nonce = $this->core->getCspNonce();
         $nonceAttr = $nonce !== '' ? ' nonce="' . $sanitizer->entities($nonce) . '"' : '';
 
+        // rrweb-snapshot and the shared stage helper define window.rrwebSnapshot
+        // and window.NABStage, which heatmap.js and session.js call. Emit them
+        // inline as deferred scripts BEFORE those consumers so document order
+        // guarantees they run first — config->scripts can't promise that ordering
+        // relative to these inline scripts inside the embedded NativeAnalytics tab.
+        $rrwebJs = $this->core->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js');
+        $stageJs = $this->core->getVersionedAssetUrl('assets/nab-stage.js');
+        $deps  = '<script' . $nonceAttr . ' src="' . $sanitizer->entities($rrwebJs) . '" defer></script>';
+        $deps .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($stageJs) . '" defer></script>';
+
         $paths = $this->core->getTrackedPaths();
         // Prefer an explicit path; otherwise adopt the page selected in the main
         // NativeAnalytics dashboard (page_id), so switching to the Behavior tab
-        // lands on the same page. Fall back to the most-tracked path.
+        // lands on the same page. Fall back to the homepage.
         $path = $sanitizer->text($input->get('path'));
         if(!$path) {
             $pageId = (int) $input->get('page_id');
@@ -93,7 +165,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 if($selected && $selected->id) $path = $selected->url;
             }
         }
-        if(!$path) $path = $paths[0] ?? '/';
+        if(!$path) $path = '/';
         // Quick range is the base period (mirrors NativeAnalytics' toolbar): an
         // explicit From and/or To overrides it. The date inputs stay empty while a
         // quick range drives the view, so the dropdown reads as the active control.
@@ -169,7 +241,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         // with the quick-range/period control first, then From/To, then the
         // page/device filters. Date inputs are blank while a quick range drives the
         // view (an explicit date overrides the range — see the date logic above).
-        $out  = '<form method="get" class="pwna-toolbar pwna-panel pwna-toolbar-panel">';
+        $out  = $deps;
+        $out .= '<form method="get" class="pwna-toolbar pwna-panel pwna-toolbar-panel">';
         // Lets the server detect a page change on submit, so the device resets to
         // the one with the most results for the newly chosen page.
         $out .= '<input type="hidden" name="prev_path" value="' . $sanitizer->entities($path) . '">';
@@ -206,7 +279,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if(!$snapshot) {
             $msg = 'No data captured yet for <strong>' . $sanitizer->entities($path)
                 . '</strong> (' . $sanitizer->entities($device) . ').';
-            return $out . '<p>' . $msg . '</p>';
+            return $out . $this->renderSessionSelector() . '<p>' . $msg . '</p>'
+                . $this->renderSessionTrail($path, $from, $to, $nonceAttr);
         }
 
         $payload = json_encode([
@@ -219,6 +293,13 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $clickTotal = 0;
         foreach($clicks as $c) $clickTotal += (int) $c['c'];
         $scrollTotal = array_sum($scroll);
+
+        $out .= $this->renderSessionSelector();
+
+        // Everything from the aggregate meta through the heatmap stage is one
+        // region; session.js hides #nab-aggregate wholesale on drill-down so the
+        // click/scroll tables and heatmap give way to the single-session trail.
+        $out .= '<div id="nab-aggregate">';
 
         $out .= '<p class="nab-snapshot-meta">Backdrop captured ' . $sanitizer->entities($snapshot['captured_at'])
             . ' at ' . (int) $snapshot['capture_width'] . 'px (' . $sanitizer->entities($snapshot['device']) . '). '
@@ -240,12 +321,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($clicks, 0, 20) as $c) {
-                $label = trim((string) ($c['label'] ?? ''));
-                $cell = $label !== ''
-                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
-                    : '<code class="nab-click-sel">' . $sanitizer->entities($c['selector']) . '</code>';
-                $out .= '<tr><td>' . $cell . '</td>'
-                    . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
+                $out .= $this->clickRow($c, (int) $c['c'], $sanitizer);
             }
             $out .= '</tbody></table></div>';
         }
@@ -254,12 +330,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Copies</th></tr></thead><tbody>';
             foreach(array_slice($copies, 0, 20) as $c) {
-                $label = trim((string) ($c['label'] ?? ''));
-                $cell = $label !== ''
-                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
-                    : '<code class="nab-click-sel">' . $sanitizer->entities($c['selector']) . '</code>';
-                $out .= '<tr><td>' . $cell . '</td>'
-                    . '<td class="nab-click-num">' . (int) $c['c'] . '</td></tr>';
+                $out .= $this->clickRow($c, (int) $c['c'], $sanitizer);
             }
             $out .= '</tbody></table></div>';
         }
@@ -293,13 +364,36 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '</div>';
         $out .= '</div>';
 
+        $out .= '</div>'; // #nab-aggregate
+
         $out .= '<script type="application/json" id="nab-data">' . $payload . '</script>';
         $out .= '<script type="application/json" id="nab-snapshot">' . $snapshot['dom'] . '</script>';
 
         $js = $this->core->getVersionedAssetUrl('assets/heatmap.js');
         $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($js) . '" defer></script>';
 
+        $out .= $this->renderSessionTrail($path, $from, $to, $nonceAttr);
+
         return $out;
+    }
+
+    /**
+     * One element row for the click/copy/frustration tables: the readable label
+     * (falling back to the raw selector) and the count. When a selector is known
+     * the row carries it in data-nab-sel and is made focusable, so heatmap.js can
+     * scroll the backdrop to that element on click.
+     */
+    protected function clickRow($row, $count, $sanitizer) {
+        $label = trim((string) ($row['label'] ?? ''));
+        $selector = (string) ($row['selector'] ?? '');
+        $cell = $label !== ''
+            ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
+            : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . '</code>';
+        $attrs = $selector !== ''
+            ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '" tabindex="0"'
+            : '';
+        return '<tr' . $attrs . '><td>' . $cell . '</td>'
+            . '<td class="nab-click-num">' . $count . '</td></tr>';
     }
 
     /**
@@ -316,18 +410,77 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
             foreach(array_slice($rows, 0, 20) as $r) {
-                $label = trim((string) ($r['label'] ?? ''));
-                $cell = $label !== ''
-                    ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
-                    : '<code class="nab-click-sel">' . $sanitizer->entities($r['selector']) . '</code>';
-                $out .= '<tr><td>' . $cell . '</td>'
-                    . '<td class="nab-click-num">' . (int) $r['c'] . '</td></tr>';
+                $out .= $this->clickRow($r, (int) $r['c'], $sanitizer);
             }
             $out .= '</tbody></table></div>';
         } else {
             $out .= '<p class="nab-frust-none">None detected.</p>';
         }
         $out .= '</div>';
+        return $out;
+    }
+
+    /**
+     * The "Sessions on this page" selector. Rendered above the aggregate region
+     * so it reads as a mode switch: picking a session swaps the whole aggregate
+     * view (click/scroll tables + heatmap) for that session's trail.
+     */
+    protected function renderSessionSelector() {
+        $out  = '<div class="pwna-panel nab-sessions" id="nab-sessions">';
+        $out .= '<h3 class="nab-frust-title">Sessions on this page</h3>';
+        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading sessions…</p></div>';
+        $out .= '</div>';
+        return $out;
+    }
+
+    /**
+     * The trail stage (own sandboxed iframe + DOM marker overlay) shown in place
+     * of the aggregate region on drill-down, plus the JSON config and the
+     * deferred session.js. Rendered after the aggregate region so the trail sits
+     * directly below the selector once the aggregate is hidden.
+     */
+    protected function renderSessionTrail($path, $from, $to, $nonceAttr) {
+        $sanitizer = $this->wire('sanitizer');
+        $procPage = $this->wire('pages')->get("template=admin, process=ProcessNativeAnalyticsBehavior, include=all");
+        if(!$procPage || !$procPage->id) return '';
+        $base = $procPage->url;
+
+        $out  = '<div class="pwna-panel nab-trail" id="nab-trail" hidden>';
+        $out .= '<div class="nab-trail-top">';
+        $out .= '<div class="nab-trail-meta" id="nab-trail-meta"></div>';
+        $out .= '</div>';
+        $out .= '<div class="nab-trail-rail" id="nab-trail-rail"></div>';
+        $out .= '<div class="nab-trail-table-wrap">';
+        $out .= '<div id="nab-trail-scroll" class="nab-trail-scroll"></div>';
+        $out .= '<div id="nab-trail-table"></div>';
+        $out .= '</div>';
+        $out .= '<div class="nab-trail-controls">';
+        $out .= '<button type="button" class="ui-button" id="nab-trail-prev">&lsaquo; Prev</button>';
+        $out .= '<span class="nab-trail-pos" id="nab-trail-pos">0 / 0</span>';
+        $out .= '<button type="button" class="ui-button" id="nab-trail-next">Next &rsaquo;</button>';
+        $out .= '<span class="nab-trail-spinner" id="nab-trail-spinner" hidden></span>';
+        $out .= '<span class="nab-trail-legend" id="nab-trail-legend"></span>';
+        $out .= '</div>';
+        $out .= '<div class="nab-trail-stage" id="nab-trail-stage">';
+        $out .= '<iframe id="nab-trail-frame" sandbox="allow-same-origin"></iframe>';
+        $out .= '<div id="nab-trail-markers" class="nab-trail-markers"></div>';
+        $out .= '<div id="nab-trail-placeholder" class="nab-trail-placeholder" hidden></div>';
+        $out .= '</div>';
+        $out .= '</div>';
+
+        $cfg = json_encode([
+            'listUrl' => $base . 'session-list/',
+            'journeyUrl' => $base . 'session-journey/',
+            'snapshotUrl' => $base . 'snapshot/',
+            'path' => (string) $path,
+            'from' => (string) $from,
+            'to' => (string) $to,
+        ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        $out .= '<script type="application/json" id="nab-session-config">' . $cfg . '</script>';
+
+        $sjs = $this->core->getVersionedAssetUrl('assets/session.js');
+        $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($sjs) . '" defer></script>';
+
         return $out;
     }
 }

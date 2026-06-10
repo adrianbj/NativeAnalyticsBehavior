@@ -1,0 +1,719 @@
+(function () {
+  "use strict";
+
+  function ready(fn) {
+    if (document.readyState !== "loading") fn();
+    else document.addEventListener("DOMContentLoaded", fn);
+  }
+
+  ready(function () {
+    var cfgEl = document.getElementById("nab-session-config");
+    var listEl = document.getElementById("nab-session-list");
+    var trail = document.getElementById("nab-trail");
+    var frame = document.getElementById("nab-trail-frame");
+    var markersLayer = document.getElementById("nab-trail-markers");
+    var placeholder = document.getElementById("nab-trail-placeholder");
+    var rail = document.getElementById("nab-trail-rail");
+    var meta = document.getElementById("nab-trail-meta");
+    var posEl = document.getElementById("nab-trail-pos");
+    var prevBtn = document.getElementById("nab-trail-prev");
+    var nextBtn = document.getElementById("nab-trail-next");
+    var legend = document.getElementById("nab-trail-legend");
+    var spinner = document.getElementById("nab-trail-spinner");
+    var stage = document.getElementById("nab-trail-stage");
+    var tableEl = document.getElementById("nab-trail-table");
+    var scrollEl = document.getElementById("nab-trail-scroll");
+    var aggregate = document.getElementById("nab-aggregate");
+    if (!cfgEl || !listEl || !trail || !frame || !markersLayer || !rail) return;
+
+    var cfg;
+    try { cfg = JSON.parse(cfgEl.textContent || "{}"); } catch (e) { return; }
+
+    var journey = null;       // current journey object
+    var flat = [];            // [{pageIndex, withinIndex}] across the whole journey, time order
+    var step = 0;             // index into flat
+    var loadedPageIndex = -1; // which journey page is currently in the iframe
+    var loadToken = 0;        // bumped per loadPage; stale async loads bail on mismatch
+    var selectEl = null;      // the session <select>, so navigation can sync it
+    var selectSpinner = null; // spinner beside the select while a session loads
+    var revealRestore = null; // undoes any off-canvas reveal for the current step
+    var focusedWithin = -1;   // interaction whose pin is element-anchored (or -1)
+    var focusedEl = null;     // the resolved element that pin is anchored to
+
+    function frameDoc() {
+      return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
+    }
+
+    function esc(s) {
+      var d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
+    }
+
+    function fmtWhen(s) {
+      // "YYYY-MM-DD HH:MM:SS" -> a compact local-ish label; keep the raw on title.
+      if (!s) return "";
+      return s.replace("T", " ").slice(0, 16);
+    }
+
+    function fmtElapsed(fromTs, ts) {
+      if (!fromTs || !ts) return "";
+      var a = Date.parse(fromTs.replace(" ", "T"));
+      var b = Date.parse(ts.replace(" ", "T"));
+      if (isNaN(a) || isNaN(b)) return "";
+      var secs = Math.max(0, Math.round((b - a) / 1000));
+      var m = Math.floor(secs / 60);
+      var s = secs % 60;
+      return m + ":" + (s < 10 ? "0" + s : String(s));
+    }
+
+    // ---- session list ----
+
+    function loadList() {
+      var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "/") +
+        "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "");
+      fetch(url, { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) { renderList(data); })
+        .catch(function () {
+          listEl.innerHTML = '<p class="nab-frust-none">Could not load sessions.</p>';
+        });
+    }
+
+    function renderList(data) {
+      var sessions = (data && data.sessions) || [];
+      if (!sessions.length) {
+        listEl.innerHTML = '<p class="nab-frust-none">No recorded sessions visited this page in range.</p>';
+        maybeDeepLink();
+        return;
+      }
+      var sel = document.createElement("select");
+      sel.className = "uk-select nab-session-select";
+      var ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "All sessions (heatmap)";
+      sel.appendChild(ph);
+      sessions.forEach(function (s) {
+        var opt = document.createElement("option");
+        opt.value = s.session_hash;
+        opt.textContent = sessionLabel(s);
+        opt.title = s.started_at + " · session " + (s.hash_short || "");
+        sel.appendChild(opt);
+      });
+      sel.addEventListener("change", function () {
+        if (sel.value) openSession(sel.value);
+        else closeTrail();
+      });
+
+      selectEl = sel;
+      listEl.innerHTML = "";
+      var row = document.createElement("div");
+      row.className = "nab-session-row";
+      row.appendChild(sel);
+      selectSpinner = document.createElement("span");
+      selectSpinner.className = "nab-trail-spinner nab-session-spinner";
+      selectSpinner.hidden = true;
+      row.appendChild(selectSpinner);
+      listEl.appendChild(row);
+      if (typeof data.total === "number" && data.total > sessions.length) {
+        var note = document.createElement("p");
+        note.className = "nab-frust-none";
+        note.textContent = "Showing " + sessions.length + " of " + data.total + " sessions.";
+        listEl.appendChild(note);
+      }
+      maybeDeepLink();
+    }
+
+    function sessionLabel(s) {
+      var pages = s.page_count || 0;
+      var clicks = s.click_count || 0;
+      var copies = s.copy_count || 0;
+      var scroll = s.max_scroll || 0;
+      var parts = [fmtWhen(s.started_at)];
+      if (s.device) parts.push(s.device);
+      parts.push(pages + (pages === 1 ? " page" : " pages"));
+      parts.push(clicks + (clicks === 1 ? " click" : " clicks"));
+      if (copies > 0) parts.push(copies + (copies === 1 ? " copy" : " copies"));
+      if (scroll > 0) parts.push(scroll + "% max scroll");
+      var sig = [];
+      if (s.has_rage) sig.push("rage");
+      if (s.has_dead) sig.push("dead");
+      if (sig.length) parts.push(sig.join("+"));
+      return parts.join(" · ");
+    }
+
+    // ---- drill-down ----
+
+    function openSession(hash) {
+      if (!/^[a-f0-9]{64}$/.test(hash)) return;
+      showSelectSpinner(true);
+      fetch(cfg.journeyUrl + "?session=" + encodeURIComponent(hash), { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          showSelectSpinner(false);
+          if (!data || data.error || !data.pages || !data.pages.length) {
+            staleNote();
+            return;
+          }
+          journey = data;
+          buildFlat();
+          loadedPageIndex = -1;
+          renderMeta();
+          renderRail();
+          renderScrollLine();
+          renderSessionTable();
+          showTrail(true);
+          setUrlSession(hash);
+          if (selectEl) selectEl.value = hash;
+          // Open on the page the admin is analysing (the filtered cfg.path),
+          // not the visitor's landing page, so the iframe and active rail chip
+          // match the page whose heatmap they drilled in from. Fall back to the
+          // first page if the journey doesn't include that path.
+          var startPage = pageIndexForPath(cfg.path);
+          var gi = firstFlatIndexOnPage(startPage);
+          step = gi >= 0 ? gi : 0;
+          loadPage(startPage, gi >= 0 ? flat[gi].withinIndex : -1);
+          updatePos();
+        })
+        .catch(function () { showSelectSpinner(false); staleNote(); });
+    }
+
+    function showSelectSpinner(on) {
+      if (selectSpinner) selectSpinner.hidden = !on;
+    }
+
+    function buildFlat() {
+      flat = [];
+      journey.pages.forEach(function (p, pi) {
+        (p.interactions || []).forEach(function (_it, ii) {
+          flat.push({ pageIndex: pi, withinIndex: ii });
+        });
+      });
+    }
+
+    // Normalise a path for comparison: drop query/hash, ensure a leading slash,
+    // and ignore a trailing slash (except root) so "/x/" and "/x" match.
+    function normPath(s) {
+      if (!s) return "/";
+      s = String(s).split("?")[0].split("#")[0];
+      if (s.charAt(0) !== "/") s = "/" + s;
+      if (s.length > 1) s = s.replace(/\/+$/, "");
+      return s || "/";
+    }
+
+    // Index of the journey page matching the given path (the filtered page),
+    // or 0 if the journey doesn't include it.
+    function pageIndexForPath(path) {
+      var want = normPath(path);
+      for (var i = 0; i < journey.pages.length; i++) {
+        if (normPath(journey.pages[i].path) === want) return i;
+      }
+      return 0;
+    }
+
+    // Flat-index of the first interaction on a page, or -1 if it has none.
+    function firstFlatIndexOnPage(pageIndex) {
+      for (var i = 0; i < flat.length; i++) {
+        if (flat[i].pageIndex === pageIndex) return i;
+      }
+      return -1;
+    }
+
+    function showTrail(on) {
+      if (on) {
+        trail.hidden = false;
+        if (aggregate) aggregate.style.display = "none";
+      } else {
+        trail.hidden = true;
+        if (aggregate) aggregate.style.display = "";
+      }
+    }
+
+    function renderMeta() {
+      var parts = [];
+      if (journey.device) parts.push(esc(journey.device));
+      if (journey.browser) parts.push(esc(journey.browser));
+      if (journey.os) parts.push(esc(journey.os));
+      if (journey.landing) parts.push("landing " + esc(journey.landing));
+      var src = journey.utm_source || journey.referrer_host;
+      if (src) parts.push("via " + esc(src));
+      var total = 0;
+      journey.pages.forEach(function (p) { total += (p.time_on_page || 0); });
+      if (total) parts.push(total + "s on site");
+      meta.innerHTML = parts.join(" &middot; ");
+    }
+
+    function renderRail() {
+      rail.innerHTML = "";
+      journey.pages.forEach(function (p, pi) {
+        var chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "nab-rail-chip";
+        chip.setAttribute("data-page", String(pi));
+        var n = document.createElement("span");
+        n.className = "nab-rail-n";
+        n.textContent = String(pi + 1);
+        var path = document.createElement("span");
+        path.className = "nab-rail-path";
+        path.textContent = p.path;
+        path.title = (p.page_title || p.path) + " · " + (p.interaction_count || 0) + " actions" +
+          (p.visit_count > 1 ? " · " + p.visit_count + " visits" : "");
+        var c = document.createElement("span");
+        c.className = "nab-rail-count";
+        c.textContent = String(p.interaction_count || 0);
+        chip.appendChild(n);
+        chip.appendChild(path);
+        chip.appendChild(c);
+        chip.addEventListener("click", function () { goToPage(pi); });
+        rail.appendChild(chip);
+      });
+    }
+
+    // Whole-session table: one row per click/copy in journey order. Each row's
+    // index equals its flat[] index, so a row click is setStep(flatIndex).
+    function renderSessionTable() {
+      if (!tableEl) return;
+      tableEl.innerHTML = "";
+      if (!flat.length) {
+        tableEl.innerHTML = '<p class="nab-frust-none">No clicks or copies recorded.</p>';
+        return;
+      }
+      var firstTs = "";
+      for (var k = 0; k < flat.length; k++) {
+        var fp = journey.pages[flat[k].pageIndex];
+        var fit = (fp.interactions || [])[flat[k].withinIndex];
+        if (fit && fit.t) { firstTs = fit.t; break; }
+      }
+      var wrap = document.createElement("div");
+      wrap.className = "pwna-table-wrap";
+      var table = document.createElement("table");
+      table.className = "pwna-table nab-click-table nab-trail-table";
+      table.innerHTML = '<thead><tr><th>Page</th><th>Element</th>' +
+        '<th>Type</th><th class="nab-click-num">Time</th></tr></thead>';
+      var tbody = document.createElement("tbody");
+      flat.forEach(function (f, fi) {
+        var p = journey.pages[f.pageIndex];
+        var it = (p.interactions || [])[f.withinIndex];
+        if (!it) return;
+        var tr = document.createElement("tr");
+        tr.className = "nab-click-row";
+        tr.setAttribute("tabindex", "0");
+        tr.setAttribute("data-flat", String(fi));
+        var sig = "";
+        if (it.rage) sig = ' <span class="nab-row-sig is-rage">rage</span>';
+        else if (it.dead) sig = ' <span class="nab-row-sig is-dead">dead</span>';
+        tr.innerHTML =
+          '<td><span class="nab-rail-path" title="' + esc(p.page_title || p.path) + '">' + esc(p.path) + '</span></td>' +
+          '<td>' + esc(it.label || it.selector || it.type) + sig + '</td>' +
+          '<td>' + esc(it.type) + '</td>' +
+          '<td class="nab-click-num">' + esc(fmtElapsed(firstTs, it.t)) + '</td>';
+        tr.addEventListener("click", function () { setStep(fi); });
+        tr.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStep(fi); }
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      tableEl.appendChild(wrap);
+      var capped = 0;
+      journey.pages.forEach(function (p) { capped += (p.more || 0); });
+      if (capped > 0) {
+        var note = document.createElement("p");
+        note.className = "nab-frust-none";
+        note.textContent = "+" + capped + " interaction" + (capped === 1 ? "" : "s") + " not shown (capped).";
+        tableEl.appendChild(note);
+      }
+    }
+
+    // Per-page deepest scroll for the session, as one summary line.
+    function renderScrollLine() {
+      if (!scrollEl) return;
+      scrollEl.innerHTML = "";
+      if (!journey || !journey.pages.length) return;
+      var bits = journey.pages.map(function (p) {
+        var d = (p.max_scroll || 0) > 0 ? (p.max_scroll + "%") : "—";
+        return esc(p.path) + " " + d;
+      });
+      scrollEl.innerHTML = "<strong>Scroll depth:</strong> " + bits.join(" &middot; ");
+    }
+
+    function setActiveRail(pi) {
+      var chips = rail.querySelectorAll(".nab-rail-chip");
+      for (var i = 0; i < chips.length; i++) {
+        chips[i].classList.toggle("is-active", String(i) === String(pi));
+      }
+    }
+
+    // Load a journey page's backdrop into the iframe, then render its markers.
+    // highlightWithin is the per-page interaction index to highlight (or -1).
+    function loadPage(pageIndex, highlightWithin) {
+      var p = journey.pages[pageIndex];
+      if (!p) return;
+      // Drop any off-canvas reveal from the page we're leaving before the new
+      // backdrop replaces the document its restore() closure points into.
+      clearReveal();
+      // Bump the load token so a slower earlier fetch can't render its page into
+      // the iframe after a later navigation has taken over (keeps the iframe and
+      // the active rail chip on the same page).
+      var token = ++loadToken;
+      setActiveRail(pageIndex);
+      if (!p.has_backdrop) {
+        showSpinner(false);
+        showPlaceholder(p);
+        loadedPageIndex = pageIndex;
+        renderMarkersFallback(p, highlightWithin);
+        return;
+      }
+      hidePlaceholder();
+      showSpinner(true);
+      fetch(cfg.snapshotUrl + "?path=" + encodeURIComponent(p.path) + "&device=" + encodeURIComponent(journey.device), { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (token !== loadToken) return;
+          if (!resp || resp.none) { showSpinner(false); showPlaceholder(p); loadedPageIndex = pageIndex; renderMarkersFallback(p, highlightWithin); return; }
+          var snap;
+          try { snap = JSON.parse(resp.dom); } catch (e) { showSpinner(false); showPlaceholder(p); loadedPageIndex = pageIndex; renderMarkersFallback(p, highlightWithin); return; }
+          NABStage.stripScripts(snap);
+          frame.style.width = (parseInt(resp.capture_width, 10) || 1280) + "px";
+          var doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+          if (!doc || !NABStage.rebuild(doc, snap)) { showSpinner(false); showPlaceholder(p); loadedPageIndex = pageIndex; renderMarkersFallback(p, highlightWithin); return; }
+          loadedPageIndex = pageIndex;
+          showSpinner(false);
+          // The rebuilt doc is a fresh document; re-bind its scroll so markers
+          // track as the iframe content scrolls.
+          bindFrameScroll();
+          // Re-render markers as the rebuilt layout settles (images shift offsets).
+          renderMarkers(p, highlightWithin);
+          setTimeout(function () { if (token === loadToken) renderMarkers(p, highlightWithin); }, 80);
+          setTimeout(function () { if (token === loadToken) renderMarkers(p, highlightWithin); }, 500);
+        })
+        .catch(function () { if (token !== loadToken) return; showSpinner(false); showPlaceholder(p); loadedPageIndex = pageIndex; renderMarkersFallback(p, highlightWithin); });
+    }
+
+    function showSpinner(on) {
+      if (spinner) spinner.hidden = !on;
+    }
+
+    // Scroll the iframe (vertical) and stage (horizontal) so the highlighted
+    // action lands roughly centred in the visible window.
+    function scrollToWithin(p, withinIndex) {
+      if (!p || !p.has_backdrop || withinIndex < 0) return;
+      var it = (p.interactions || [])[withinIndex];
+      if (!it || !it.dh) return;
+      var g = NABStage.geom(frame, markersLayer);
+      if (!g) return;
+      var docY = (it.y_px / it.dh) * g.fullH;
+      var docX = (it.x_frac / 1000) * g.fullW;
+      var win = frame.contentWindow;
+      if (win) win.scrollTo(0, Math.max(0, docY - frame.clientHeight / 2));
+      if (stage) stage.scrollLeft = Math.max(0, docX - stage.clientWidth / 2);
+    }
+
+    function showPlaceholder(p) {
+      frame.style.visibility = "hidden";
+      if (placeholder) {
+        placeholder.hidden = false;
+        placeholder.innerHTML = '<p class="nab-frust-none">No backdrop stored for <strong>' + esc(p.path) +
+          "</strong> (" + esc(journey.device) + "). Showing interactions as a list.</p>";
+      }
+    }
+    function hidePlaceholder() {
+      frame.style.visibility = "";
+      if (placeholder) { placeholder.hidden = true; placeholder.innerHTML = ""; }
+    }
+
+    // Positioned numbered pins over the backdrop.
+    function renderMarkers(p, highlightWithin) {
+      markersLayer.innerHTML = "";
+      var ints = p.interactions || [];
+      var g = NABStage.geom(frame, markersLayer);
+      if (!g) return;
+      ints.forEach(function (it, ii) {
+        var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
+        if (!pt) return;
+        var pin = makePin(p, it, ii);
+        pin.style.left = pt.x + "px";
+        pin.style.top = pt.y + "px";
+        markersLayer.appendChild(pin);
+      });
+      if (p.more) {
+        var more = document.createElement("div");
+        more.className = "nab-marker-more";
+        more.textContent = "+" + p.more + " more not shown";
+        markersLayer.appendChild(more);
+      }
+      highlight(p, highlightWithin);
+    }
+
+    // Fallback list when there is no backdrop to position against.
+    function renderMarkersFallback(p, highlightWithin) {
+      markersLayer.innerHTML = "";
+      var list = document.createElement("ol");
+      list.className = "nab-marker-list";
+      (p.interactions || []).forEach(function (it, ii) {
+        var li = document.createElement("li");
+        li.appendChild(makePin(p, it, ii));
+        var span = document.createElement("span");
+        span.className = "nab-marker-text";
+        span.textContent = (it.label || it.selector || it.type);
+        li.appendChild(span);
+        list.appendChild(li);
+      });
+      if (placeholder) placeholder.appendChild(list);
+      applyHighlight(highlightWithin);
+    }
+
+    function makePin(p, it, withinIndex) {
+      var pin = document.createElement("button");
+      pin.type = "button";
+      pin.className = "nab-marker nab-marker-" + (it.type === "copy" ? "copy" : "click") +
+        (it.dead ? " is-dead" : "") + (it.rage ? " is-rage" : "");
+      pin.textContent = String(withinIndex + 1);
+      pin.title = (it.label || it.selector || it.type) + (it.t ? " · " + it.t : "");
+      pin.setAttribute("data-within", String(withinIndex));
+      pin.addEventListener("click", function () {
+        var gi = flatIndexFor(loadedPageIndex, withinIndex);
+        if (gi >= 0) { step = gi; updatePos(); highlight(p, withinIndex); }
+      });
+      return pin;
+    }
+
+    function flatIndexFor(pageIndex, withinIndex) {
+      for (var i = 0; i < flat.length; i++) {
+        if (flat[i].pageIndex === pageIndex && flat[i].withinIndex === withinIndex) return i;
+      }
+      return -1;
+    }
+
+    function applyHighlight(withinIndex) {
+      var pins = markersLayer.querySelectorAll(".nab-marker");
+      for (var i = 0; i < pins.length; i++) {
+        var on = String(pins[i].getAttribute("data-within")) === String(withinIndex);
+        pins[i].classList.toggle("is-current", on);
+        pins[i].classList.toggle("is-dim", withinIndex >= 0 && !on);
+      }
+    }
+
+    // Undo any off-canvas reveal applied for the current step and forget the
+    // element-anchored pin.
+    function clearReveal() {
+      if (revealRestore) { revealRestore(); revealRestore = null; }
+      focusedWithin = -1;
+      focusedEl = null;
+    }
+
+    // Highlight an interaction. If it resolves to an element hidden inside a
+    // closed panel (e.g. a UIKit off-canvas menu the scriptless iframe can't
+    // open), force the panel visible and anchor the pin to the now-rendered
+    // element so the admin can see what was actually clicked; otherwise fall
+    // back to scrolling by the recorded coordinates.
+    function highlight(p, withinIndex) {
+      applyHighlight(withinIndex);
+      if (revealHighlighted(p, withinIndex)) return;
+      if (withinIndex >= 0) scrollToWithin(p, withinIndex);
+    }
+
+    // Returns true when it revealed a hidden panel and took over pin placement
+    // (so the caller skips the recorded-coordinate scroll).
+    function revealHighlighted(p, withinIndex) {
+      clearReveal();
+      if (!p || !p.has_backdrop || withinIndex < 0) return false;
+      var it = (p.interactions || [])[withinIndex];
+      if (!it || !it.selector) return false;
+      var doc = frameDoc();
+      if (!doc) return false;
+      var el = NABStage.resolveSelector(doc, it.selector);
+      if (!el || !NABStage.isHidden(el)) return false;
+      revealRestore = NABStage.reveal(el, frame.contentWindow);
+      focusedWithin = withinIndex;
+      focusedEl = el;
+      // The reveal forces a closed panel (a fixed off-canvas bar) visible. Let
+      // its layout settle for a frame, then bring the whole panel on screen and
+      // anchor the pin to the now-rendered element. Guard against a newer step
+      // having taken over before the frame fires.
+      requestAnimationFrame(function () {
+        if (focusedWithin !== withinIndex || focusedEl !== el) return;
+        revealScroll(el);
+        var pin = markersLayer.querySelector('.nab-marker[data-within="' + withinIndex + '"]');
+        if (pin) placePinByEl(pin, el);
+      });
+      return true;
+    }
+
+    // The outermost ancestor that makes up the revealed panel: a positioned
+    // (fixed/absolute) box or an explicit off-canvas container. Used to scroll
+    // the panel — not just the small clicked element — into view, so a fixed
+    // off-canvas bar pinned to the iframe's left edge isn't left off-screen.
+    function panelRoot(el) {
+      var win = frame.contentWindow;
+      var doc = el.ownerDocument, body = doc && doc.body;
+      var node = el, found = el;
+      while (node && node.nodeType === 1 && node !== body) {
+        if (node.className && /offcanvas/i.test(String(node.className))) return node;
+        var pos = win.getComputedStyle(node).position;
+        if (pos === "fixed" || pos === "absolute") found = node;
+        node = node.parentNode;
+      }
+      return found;
+    }
+
+    // Position a pin over a resolved element's rendered centre (used when the
+    // pin's recorded coordinates don't match the revealed layout).
+    function placePinByEl(pin, el) {
+      var r = el.getBoundingClientRect();
+      var fr = frame.getBoundingClientRect();
+      var mr = markersLayer.getBoundingClientRect();
+      pin.style.left = (fr.left - mr.left + r.left + r.width / 2) + "px";
+      pin.style.top = (fr.top - mr.top + r.top + r.height / 2) + "px";
+    }
+
+    // Align the revealed panel's top-left edge into the stage (rather than
+    // centring the clicked element, which can push a left-anchored panel off
+    // the left edge), then nudge the outer page so the stage is on screen.
+    function revealScroll(el) {
+      var panel = panelRoot(el);
+      var pr = panel.getBoundingClientRect();
+      var er = el.getBoundingClientRect();
+      var win = frame.contentWindow;
+      if (win) {
+        // er.top/pr.top are iframe-viewport-relative; add pageYOffset to get the
+        // document position to scroll to (no-op for a fixed bar at top:0).
+        var top = Math.min(er.top, pr.top);
+        win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + top - 12));
+      }
+      if (stage) {
+        // The iframe sits at the stage's content origin (frame.offsetLeft 0) and
+        // can't scroll horizontally (html{overflow-x:hidden}), so the panel's x
+        // in stage-scroll coords equals its iframe-relative left. Align it to the
+        // stage's left edge — don't mix in the stage's own parent-page rect.
+        stage.scrollLeft = Math.max(0, pr.left - 4);
+        if (stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+
+    // Reposition existing pins without rebuilding (scroll/resize).
+    function positionMarkers() {
+      if (loadedPageIndex < 0 || !journey) return;
+      var p = journey.pages[loadedPageIndex];
+      if (!p || !p.has_backdrop) return;
+      var ints = p.interactions || [];
+      var g = NABStage.geom(frame, markersLayer);
+      if (!g) return;
+      var pins = markersLayer.querySelectorAll(".nab-marker");
+      for (var i = 0; i < pins.length; i++) {
+        var wi = parseInt(pins[i].getAttribute("data-within"), 10);
+        if (wi === focusedWithin && focusedEl) { placePinByEl(pins[i], focusedEl); continue; }
+        var it = ints[wi];
+        if (!it) continue;
+        var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
+        if (!pt) continue;
+        pins[i].style.left = pt.x + "px";
+        pins[i].style.top = pt.y + "px";
+      }
+    }
+
+    // ---- step-through ----
+
+    function goToPage(pageIndex) {
+      // Jump to the first interaction on that page (or just show the page if none).
+      var gi = -1;
+      for (var i = 0; i < flat.length; i++) { if (flat[i].pageIndex === pageIndex) { gi = i; break; } }
+      if (gi >= 0) { step = gi; loadPage(pageIndex, flat[gi].withinIndex); }
+      else loadPage(pageIndex, -1);
+      updatePos();
+    }
+
+    function setStep(newStep) {
+      if (!flat.length) return;
+      if (newStep < 0) newStep = 0;
+      if (newStep > flat.length - 1) newStep = flat.length - 1;
+      step = newStep;
+      var target = flat[step];
+      if (target.pageIndex !== loadedPageIndex) {
+        loadPage(target.pageIndex, target.withinIndex);
+      } else {
+        highlight(journey.pages[loadedPageIndex], target.withinIndex);
+      }
+      updatePos();
+    }
+
+    function updatePos() {
+      posEl.textContent = flat.length ? (step + 1) + " / " + flat.length : "0 / 0";
+      prevBtn.disabled = (step <= 0);
+      nextBtn.disabled = (step >= flat.length - 1);
+      legend.textContent = "rage = repeated · dead = no-op · ◻ copy";
+      if (tableEl) {
+        var rows = tableEl.querySelectorAll(".nab-click-row");
+        for (var i = 0; i < rows.length; i++) {
+          rows[i].classList.toggle("is-current", rows[i].getAttribute("data-flat") === String(step));
+        }
+      }
+    }
+
+    if (prevBtn) prevBtn.addEventListener("click", function () { setStep(step - 1); });
+    if (nextBtn) nextBtn.addEventListener("click", function () { setStep(step + 1); });
+
+    function closeTrail() {
+      showTrail(false);
+      showSpinner(false);
+      clearReveal();
+      journey = null; flat = []; step = 0; loadedPageIndex = -1;
+      markersLayer.innerHTML = "";
+      setUrlSession(null);
+      if (selectEl) selectEl.value = "";
+      if (tableEl) tableEl.innerHTML = "";
+      if (scrollEl) scrollEl.innerHTML = "";
+    }
+
+    // ---- deep-linking ----
+
+    function currentUrlSession() {
+      var m = window.location.search.match(/[?&]session=([a-f0-9]{64})\b/);
+      return m ? m[1] : null;
+    }
+    function setUrlSession(hash) {
+      var url = new URL(window.location.href);
+      if (hash) url.searchParams.set("session", hash);
+      else url.searchParams.delete("session");
+      window.history.replaceState({}, "", url.toString());
+    }
+    var deepLinkTried = false;
+    function maybeDeepLink() {
+      if (deepLinkTried) return;
+      deepLinkTried = true;
+      var h = currentUrlSession();
+      if (h) openSession(h);
+    }
+    function staleNote() {
+      setUrlSession(null);
+      var note = document.createElement("p");
+      note.className = "nab-frust-none nab-stale";
+      note.textContent = "That session is no longer available.";
+      listEl.insertBefore(note, listEl.firstChild);
+      setTimeout(function () { if (note.parentNode) note.parentNode.removeChild(note); }, 6000);
+    }
+
+    // Bind the iframe's own scroll so markers track as the rebuilt page scrolls.
+    // Re-called after every rebuild; addEventListener de-dupes the same handler,
+    // so binding the live contentWindow each load is safe.
+    function bindFrameScroll() {
+      var win = frame.contentWindow;
+      if (win) win.addEventListener("scroll", positionMarkers, { passive: true });
+    }
+
+    // Reposition markers on stage scroll and resize (iframe scroll is bound per
+    // rebuild via bindFrameScroll).
+    function bindReposition() {
+      bindFrameScroll();
+      if (stage) stage.addEventListener("scroll", positionMarkers, { passive: true });
+      window.addEventListener("resize", positionMarkers);
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(positionMarkers).observe(frame);
+      }
+    }
+
+    bindReposition();
+    loadList();
+  });
+})();

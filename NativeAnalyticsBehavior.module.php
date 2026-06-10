@@ -431,6 +431,49 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * True when NativeAnalytics' hits table exists. Cached per request. The
+     * session-trail queries and the bot filter all depend on pwna_hits, so they
+     * degrade gracefully (empty result) when NA is not installed.
+     */
+    protected function hasHitsTable() {
+        static $has = null;
+        if($has !== null) return $has;
+        $has = false;
+        try {
+            $t = $this->wire('database')->query("SHOW TABLES LIKE 'pwna_hits'");
+            $has = ($t && $t->rowCount() > 0);
+        } catch(\Throwable $e) {
+            $has = false;
+        }
+        return $has;
+    }
+
+    /**
+     * A " COLLATE <name>" fragment that forces our na_session_hash to the live
+     * collation of pwna_hits.session_hash, so a column-to-column comparison
+     * between the two is well-defined (a bare comparison raises MySQL error
+     * 1267 when their table-default collations differ). Returns '' when the
+     * column can't be inspected. Cached per request.
+     */
+    protected function naHashCollation() {
+        static $collate = null;
+        if($collate !== null) return $collate;
+        $collate = '';
+        if(!$this->hasHitsTable()) return $collate;
+        try {
+            $col = $this->wire('database')->query("SHOW FULL COLUMNS FROM `pwna_hits` LIKE 'session_hash'");
+        } catch(\Throwable $e) {
+            return $collate;
+        }
+        if($col && $col->rowCount() > 0) {
+            $row = $col->fetch(\PDO::FETCH_ASSOC);
+            $c = isset($row['Collation']) ? (string) $row['Collation'] : '';
+            if($c !== '' && preg_match('/^[A-Za-z0-9_]+$/', $c)) $collate = " COLLATE $c";
+        }
+        return $collate;
+    }
+
+    /**
      * WHERE fragment (with a leading AND) that drops rows whose session
      * NativeAnalytics flagged as a bot, for appending to any events query.
      * Returns '' (no filtering) when the toggle is off or NA's hits table is
@@ -449,20 +492,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if($sql !== null) return $sql;
         $sql = '';
         if(empty($this->excludeNaBots)) return $sql;
-        $db = $this->wire('database');
-        $t = $db->query("SHOW TABLES LIKE 'pwna_hits'");
-        if(!$t || $t->rowCount() === 0) return $sql;
-        // na_session_hash and pwna_hits.session_hash were created under different
-        // table-default collations (utf8mb4_0900_ai_ci vs utf8mb4_general_ci), so a
-        // bare IN comparison raises error 1267. Force na_session_hash to the live
-        // collation of pwna_hits.session_hash so the comparison is well-defined.
-        $collate = '';
-        $col = $db->query("SHOW FULL COLUMNS FROM `pwna_hits` LIKE 'session_hash'");
-        if($col && $col->rowCount() > 0) {
-            $row = $col->fetch(\PDO::FETCH_ASSOC);
-            $c = isset($row['Collation']) ? (string) $row['Collation'] : '';
-            if($c !== '' && preg_match('/^[A-Za-z0-9_]+$/', $c)) $collate = " COLLATE $c";
-        }
+        if(!$this->hasHitsTable()) return $sql;
+        $collate = $this->naHashCollation();
         $sql = " AND NOT (`na_session_hash` <> '' AND `na_session_hash`$collate IN ("
              . "SELECT `session_hash` FROM `pwna_hits` WHERE `is_bot`=1 AND `session_hash` <> ''))";
         return $sql;
@@ -909,6 +940,317 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $out = [];
         foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
             $out[] = [(int) $r['x_frac'], (int) $r['y_px'], (int) $r['dh']];
+        }
+        return $out;
+    }
+
+    /**
+     * Whether a stored backdrop exists for a (path_hash, device) bucket. Cheap
+     * existence check used to flag journey pages that can be replayed vs. shown
+     * on a placeholder — it does NOT decode the DOM blob (getSnapshot does).
+     */
+    public function snapshotExistsForHash($pathHash, $device) {
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT 1 FROM `" . self::SNAPSHOT_TABLE . "`
+            WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
+        $stmt->execute([':ph' => (string) $pathHash, ':dev' => (string) $device]);
+        return (bool) $stmt->fetchColumn();
+    }
+
+    /**
+     * Sessions that interacted with $path within [$from,$to], most-recently
+     * active first. The page-and-range filter selects na_session_hashes from
+     * nab_events (NOT pwna_hits): nab_events keys on the full path including URL
+     * segments, so segment landing pages like /products/sale are distinguishable,
+     * whereas pwna_hits collapses them to the canonical page (/sign-up/) and so
+     * can't isolate a single segment. The outer aggregate still reports each
+     * qualifying session's FULL stats (start time, distinct page count, device)
+     * from pwna_hits across all its hits, joined on the shared session_hash, so
+     * the list row reflects the whole visit even if it began before $from.
+     * Interaction counts and frustration flags are left-joined from nab_events via
+     * the collation-coerced na_session_hash; sessions with no captured clicks/copies
+     * still appear with a zero count. Only sessions recorded since na_session_hash
+     * shipped qualify (older interactions carry an empty hash).
+     *
+     * @return array<int,array{session_hash:string,started_at:string,last_at:string,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int}>
+     */
+    public function getSessionsForPath($path, $from, $to, $limit = 50) {
+        if(!$this->hasHitsTable()) return [];
+        $db = $this->wire('database');
+        $limit = max(1, min(200, (int) $limit));
+        $collate = $this->naHashCollation();
+        $sql = "SELECT h.`session_hash` AS session_hash,
+                       MIN(h.`created_at`) AS started_at,
+                       MAX(h.`created_at`) AS last_at,
+                       MAX(h.`device_type`) AS device,
+                       COUNT(DISTINCT h.`path_hash`) AS page_count,
+                       COALESCE(e.`clicks`, 0) AS click_count,
+                       COALESCE(e.`copies`, 0) AS copy_count,
+                       COALESCE(e.`max_scroll`, 0) AS max_scroll,
+                       COALESCE(e.`has_dead`, 0) AS has_dead,
+                       COALESCE(e.`has_rage`, 0) AS has_rage
+                FROM `pwna_hits` h
+                LEFT JOIN (
+                    SELECT `na_session_hash`,
+                           SUM(`type`='click') AS clicks,
+                           SUM(`type`='copy') AS copies,
+                           MAX(`dead`) AS has_dead,
+                           MAX(`rage`) AS has_rage,
+                           MAX(`scroll_pct`) AS max_scroll
+                    FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `na_session_hash` <> ''
+                    GROUP BY `na_session_hash`
+                ) e ON e.`na_session_hash`$collate = h.`session_hash`
+                WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
+                    SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                )
+                GROUP BY h.`session_hash`
+                ORDER BY last_at DESC
+                LIMIT " . $limit;
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':from' => (string) $from,
+            ':to' => (string) $to,
+        ]);
+        $out = [];
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+            $dev = (string) $r['device'];
+            if(!in_array($dev, ['desktop', 'tablet', 'mobile'], true)) $dev = 'desktop';
+            $out[] = [
+                'session_hash' => (string) $r['session_hash'],
+                'started_at' => (string) $r['started_at'],
+                'last_at' => (string) $r['last_at'],
+                'device' => $dev,
+                'page_count' => (int) $r['page_count'],
+                'click_count' => (int) $r['click_count'],
+                'copy_count' => (int) $r['copy_count'],
+                'max_scroll' => (int) $r['max_scroll'],
+                'has_dead' => ((int) $r['has_dead']) ? 1 : 0,
+                'has_rage' => ((int) $r['has_rage']) ? 1 : 0,
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Count of distinct sessions that qualify for getSessionsForPath() (same
+     * page-and-range filter). Backs the list's "showing N of M" note without
+     * paging the full set.
+     */
+    public function countSessionsForPath($path, $from, $to) {
+        if(!$this->hasHitsTable()) return 0;
+        $db = $this->wire('database');
+        $collate = $this->naHashCollation();
+        $stmt = $db->prepare("SELECT COUNT(DISTINCT h.`session_hash`) FROM `pwna_hits` h
+            WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
+                SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
+                WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+                  AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+            )");
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':from' => (string) $from,
+            ':to' => (string) $to,
+        ]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    /**
+     * One session's cross-page journey, oldest page first, plus session-level
+     * context from the entry (earliest) hit. Distinct pages are merged in
+     * first-visit order: per-visit interaction attribution is impossible from
+     * aggregate nab_events (clicks are stored per path_hash, not per pageview),
+     * so a revisited path appears once with its time_on_page summed and its
+     * visit_count noted. Canonical pages that the session reached via a segment URL
+     * segment are specialized back to the per-segment path (see below) so the rail,
+     * its backdrop, and its interaction count match the page the visitor saw.
+     * Returns null for a malformed hash, when NA's hits table is absent, or when
+     * the session has no hits.
+     *
+     * @return array{device:string,browser:string,os:string,landing:string,referrer_host:string,referrer_url:string,utm_source:string,utm_medium:string,utm_campaign:string,pages:array<int,array{path:string,path_hash:string,page_title:string,time_on_page:int,visit_count:int,interaction_count:int,max_scroll:int,has_backdrop:bool}>}|null
+     */
+    public function getSessionJourney($sessionHash) {
+        $sessionHash = (string) $sessionHash;
+        if(!preg_match('/^[a-f0-9]{64}$/', $sessionHash)) return null;
+        if(!$this->hasHitsTable()) return null;
+        $db = $this->wire('database');
+
+        $ctxStmt = $db->prepare("SELECT `referrer_host`,`referrer_url`,`browser`,`os`,`device_type`,
+                `utm_source`,`utm_medium`,`utm_campaign`,`path` AS landing
+            FROM `pwna_hits`
+            WHERE `session_hash`=:sh AND `session_hash` <> ''
+            ORDER BY `created_at` ASC, `id` ASC LIMIT 1");
+        $ctxStmt->execute([':sh' => $sessionHash]);
+        $ctx = $ctxStmt->fetch(\PDO::FETCH_ASSOC);
+        if(!$ctx) return null;
+        $device = (string) $ctx['device_type'];
+        if(!in_array($device, ['desktop', 'tablet', 'mobile'], true)) $device = 'desktop';
+
+        $pagesStmt = $db->prepare("SELECT `path`, `path_hash`,
+                MAX(`page_title`) AS page_title,
+                MIN(`created_at`) AS first_at,
+                SUM(`time_on_page`) AS time_on_page,
+                COUNT(*) AS visit_count
+            FROM `pwna_hits`
+            WHERE `session_hash`=:sh AND `session_hash` <> ''
+            GROUP BY `path_hash`, `path`
+            ORDER BY first_at ASC
+            LIMIT 100");
+        $pagesStmt->execute([':sh' => $sessionHash]);
+        $pageRows = $pagesStmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+        // Per-page interaction totals for this session (matched column-to-param,
+        // so no COLLATE needed). Authoritative for the rail count and the
+        // "+N more" marker cap when getSessionInteractions caps its rows.
+        $countStmt = $db->prepare("SELECT `path_hash`, COUNT(*) AS ic
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `na_session_hash`=:sh AND `type` IN ('click','copy')
+            GROUP BY `path_hash`");
+        $countStmt->execute([':sh' => $sessionHash]);
+        $counts = [];
+        foreach($countStmt->fetchAll(\PDO::FETCH_ASSOC) as $c) {
+            $counts[(string) $c['path_hash']] = (int) $c['ic'];
+        }
+
+        // Per-page deepest scroll for this session. Scroll is stored as one row
+        // per (session, page, device) holding the max scroll_pct reached, keyed
+        // on the full per-segment path_hash, so it lines up with the specialized
+        // page entries below (and the per-segment click counts).
+        $scrollStmt = $db->prepare("SELECT `path_hash`, MAX(`scroll_pct`) AS max_scroll
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `na_session_hash`=:sh AND `type`='scroll' AND `path_hash` <> ''
+            GROUP BY `path_hash`");
+        $scrollStmt->execute([':sh' => $sessionHash]);
+        $scroll = [];
+        foreach($scrollStmt->fetchAll(\PDO::FETCH_ASSOC) as $sc) {
+            $scroll[(string) $sc['path_hash']] = (int) $sc['max_scroll'];
+        }
+
+        // Distinct full paths (any event type) this session touched. pwna_hits
+        // collapses segment URL segments to the canonical page, so a /products/sale
+        // visit is keyed '/sign-up/' in $pageRows but '/products/sale' here. We use
+        // these to "specialize" each canonical rail page back to the segment variant
+        // the session actually saw, so the rail path, its backdrop, and its
+        // interaction count all key on the per-segment path_hash (matching the
+        // heatmap, the snapshot, and the cfg.path the viewer opens on).
+        $evStmt = $db->prepare("SELECT DISTINCT `path`, `path_hash`
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `na_session_hash`=:sh AND `path_hash` <> '' AND `path` <> ''
+            LIMIT 300");
+        $evStmt->execute([':sh' => $sessionHash]);
+        $eventPaths = $evStmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+
+        // Map canonical pwna path_hash => list of per-segment variants. A variant is
+        // an event path whose longest matching canonical prefix (among this session's
+        // own pwna pages, excluding the '/' catch-all) is that page, and which keys
+        // differently from the canonical (i.e. it carries a URL segment).
+        $variants = [];
+        foreach($eventPaths as $ep) {
+            $f = (string) $ep['path'];
+            $fh = (string) $ep['path_hash'];
+            $bestHash = ''; $bestLen = 0;
+            foreach($pageRows as $r) {
+                $cp = (string) $r['path'];
+                if($cp === '' || $cp === '/') continue;
+                if(strpos($f, $cp) === 0 && strlen($cp) > $bestLen) {
+                    $bestLen = strlen($cp);
+                    $bestHash = (string) $r['path_hash'];
+                }
+            }
+            if($bestHash === '' || $fh === $bestHash) continue;
+            $variants[$bestHash][] = ['path' => $f, 'path_hash' => $fh];
+        }
+
+        $pages = [];
+        foreach($pageRows as $r) {
+            $ph = (string) $r['path_hash'];
+            $vs = $variants[$ph] ?? [];
+            if(!$vs) {
+                $pages[] = [
+                    'path' => (string) $r['path'],
+                    'path_hash' => $ph,
+                    'page_title' => (string) $r['page_title'],
+                    'time_on_page' => (int) $r['time_on_page'],
+                    'visit_count' => (int) $r['visit_count'],
+                    'interaction_count' => $counts[$ph] ?? 0,
+                    'max_scroll' => $scroll[$ph] ?? 0,
+                    'has_backdrop' => $this->snapshotExistsForHash($ph, $device),
+                ];
+                continue;
+            }
+            // One rail entry per segment variant. pwna_hits only tracks the collapsed
+            // page, so per-variant durations aren't recoverable: attribute the
+            // canonical pageview stats to the first variant and mark the rest as
+            // single zero-duration visits (a session almost always arrives via one
+            // segment, so multiple variants of the same page is a rare edge).
+            $first = true;
+            foreach($vs as $v) {
+                $vh = (string) $v['path_hash'];
+                $pages[] = [
+                    'path' => (string) $v['path'],
+                    'path_hash' => $vh,
+                    'page_title' => (string) $r['page_title'],
+                    'time_on_page' => $first ? (int) $r['time_on_page'] : 0,
+                    'visit_count' => $first ? (int) $r['visit_count'] : 1,
+                    'interaction_count' => $counts[$vh] ?? 0,
+                    'max_scroll' => $scroll[$vh] ?? 0,
+                    'has_backdrop' => $this->snapshotExistsForHash($vh, $device),
+                ];
+                $first = false;
+            }
+        }
+
+        return [
+            'device' => $device,
+            'browser' => (string) $ctx['browser'],
+            'os' => (string) $ctx['os'],
+            'landing' => (string) $ctx['landing'],
+            'referrer_host' => (string) $ctx['referrer_host'],
+            'referrer_url' => (string) $ctx['referrer_url'],
+            'utm_source' => (string) $ctx['utm_source'],
+            'utm_medium' => (string) $ctx['utm_medium'],
+            'utm_campaign' => (string) $ctx['utm_campaign'],
+            'pages' => $pages,
+        ];
+    }
+
+    /**
+     * One session's clicks/copies on a single page, oldest first, for marker
+     * rendering. Matched column-to-param so no COLLATE is needed. Capped (D9):
+     * up to $limit rows (default 200); callers compute "+N more" from the
+     * journey's authoritative interaction_count.
+     *
+     * @return array<int,array{type:string,x_frac:int,y_px:int,dh:int,selector:string,label:string,dead:int,rage:int,t:string}>
+     */
+    public function getSessionInteractions($sessionHash, $pathHash, $device, $limit = 200) {
+        $sessionHash = (string) $sessionHash;
+        if(!preg_match('/^[a-f0-9]{64}$/', $sessionHash)) return [];
+        $limit = max(1, min(500, (int) $limit));
+        $device = in_array((string) $device, ['desktop', 'tablet', 'mobile'], true) ? (string) $device : 'desktop';
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `type`,`x_frac`,`y_px`,`dh`,`selector`,`label`,`dead`,`rage`,`created_at`
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `na_session_hash`=:sh AND `path_hash`=:ph AND `device`=:dev
+              AND `type` IN ('click','copy')
+            ORDER BY `created_at` ASC, `id` ASC
+            LIMIT " . $limit);
+        $stmt->execute([':sh' => $sessionHash, ':ph' => (string) $pathHash, ':dev' => $device]);
+        $out = [];
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+            $out[] = [
+                'type' => (string) $r['type'],
+                'x_frac' => (int) $r['x_frac'],
+                'y_px' => (int) $r['y_px'],
+                'dh' => (int) $r['dh'],
+                'selector' => (string) $r['selector'],
+                'label' => (string) $r['label'],
+                'dead' => ((int) $r['dead']) ? 1 : 0,
+                'rage' => ((int) $r['rage']) ? 1 : 0,
+                't' => (string) $r['created_at'],
+            ];
         }
         return $out;
     }

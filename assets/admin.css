@@ -20,6 +20,8 @@
    space the second table's heading off the first table. */
 .pwna-table-wrap + .nab-frust-title { margin-top: 1.5em; }
 .nab-click-table .nab-click-label { display: block; }
+.nab-click-row { cursor: pointer; }
+.nab-click-row:hover, .nab-click-row:focus { background: #f0f6f8; outline: none; }
 .nab-click-table .nab-click-sel { display: block; word-break: break-all; font-size: .8em; color: #888; }
 .nab-click-table .nab-click-num { text-align: right; white-space: nowrap; width: 6em; }
 .nab-click-table .nab-sec-l2 { padding-left: 1.5em; }
@@ -36,3 +38,54 @@
 .nab-pathfind-loading { display: flex; align-items: center; gap: .5em; padding: .4em .6em; color: #888; font-size: .85em; }
 .nab-pathfind-spinner { width: 14px; height: 14px; border: 2px solid #ddd; border-top-color: #0C7896; border-radius: 50%; animation: nab-spin .6s linear infinite; }
 @keyframes nab-spin { to { transform: rotate(360deg); } }
+
+/* --- single-session trail viewer --- */
+.nab-sessions { margin-top: 1.5em; }
+.nab-session-row { display: flex; align-items: center; gap: .6em; }
+.nab-session-row .nab-session-select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.nab-session-spinner { flex: 0 0 auto; }
+
+.nab-trail { margin-top: 1.5em; }
+.nab-trail-top { display: flex; align-items: center; gap: 1em; margin: 0 0 .5em; }
+.nab-trail-meta { font-size: .85em; color: #555; }
+.nab-trail-rail { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 .5em; }
+.nab-rail-chip { display: inline-flex; align-items: center; gap: .4em; border: 1px solid #ddd; background: #fff; border-radius: 4px; padding: .25em .6em; cursor: pointer; font-size: .8em; max-width: 260px; }
+.nab-rail-chip:hover, .nab-rail-chip:focus { background: #f0f6f8; }
+.nab-rail-chip.is-active { border-color: #0C7896; box-shadow: inset 0 0 0 1px #0C7896; }
+.nab-rail-chip .nab-rail-n { display: inline-flex; align-items: center; justify-content: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #0C7896; color: #fff; font-size: .85em; }
+.nab-rail-chip .nab-rail-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nab-rail-chip .nab-rail-count { color: #888; }
+
+.nab-trail-controls { display: flex; align-items: center; gap: .6em; margin: 0 0 .5em; }
+.nab-trail-pos { font-size: .85em; color: #555; min-width: 4em; text-align: center; }
+.nab-trail-spinner { width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #0C7896; border-radius: 50%; animation: nab-spin .6s linear infinite; }
+.nab-trail-spinner[hidden] { display: none; }
+.nab-trail-legend { font-size: .75em; color: #888; margin-left: .5em; }
+
+.nab-trail-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
+.nab-trail-stage #nab-trail-frame { height: 75vh; border: 0; display: block; background: #fff; }
+.nab-trail-markers { position: absolute; top: 0; left: 0; pointer-events: none; }
+.nab-trail-placeholder { padding: 1em; }
+.nab-marker-list { margin: 0; padding-left: 1.6em; }
+.nab-marker-list li { margin: .25em 0; display: flex; align-items: center; gap: .5em; }
+.nab-marker-text { font-size: .85em; color: #555; }
+
+/* numbered pins */
+.nab-marker { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; min-width: 1.5em; height: 1.5em; padding: 0 .35em; border: 2px solid #fff; border-radius: 50%; background: #0C7896; color: #fff; font-size: .75em; line-height: 1; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.nab-marker-copy { background: #555; border-radius: 4px; }
+.nab-marker.is-dead { outline: 2px dashed #6b7280; outline-offset: 1px; }
+.nab-marker.is-rage { background: #BC5620; }
+.nab-marker.is-current { transform: translate(-50%, -50%) scale(1.5); z-index: 5; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+.nab-marker.is-dim { opacity: .45; }
+.nab-marker-more { position: absolute; top: .5em; right: .5em; background: rgba(0,0,0,.65); color: #fff; font-size: .75em; padding: .2em .5em; border-radius: 3px; }
+
+/* single-session table + scroll line (above the trail stage) */
+.nab-trail-table-wrap { margin-top: 1em; margin-bottom: 1em; }
+.nab-trail-scroll { font-size: .85em; color: #555; margin: 0 0 .5em; }
+#nab-trail-table { max-height: 40vh; overflow: auto; }
+.nab-trail-table thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
+.nab-trail-table td .nab-rail-path { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.nab-trail-table .nab-click-row.is-current { background: #e3eef3; }
+.nab-row-sig { font-size: .75em; padding: 0 .35em; border-radius: 3px; color: #fff; }
+.nab-row-sig.is-rage { background: #BC5620; }
+.nab-row-sig.is-dead { background: #6b7280; }
