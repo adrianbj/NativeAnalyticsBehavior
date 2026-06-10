@@ -735,32 +735,6 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Best initial device for a path: the one with the most clicks in range,
-     * falling back to the widest captured snapshot, then 'desktop'. Used when
-     * the dashboard loads without an explicit device choice.
-     */
-    public function getDefaultDevice($path, $fromDate, $toDate) {
-        $db = $this->wire('database');
-        $ph = md5('/' . ltrim((string) $path, '/'));
-        $stmt = $db->prepare("SELECT `device` FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='click' AND `path_hash`=:ph AND `selector` <> ''
-              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
-            GROUP BY `device` ORDER BY COUNT(*) DESC LIMIT 1");
-        $stmt->execute([
-            ':ph' => $ph,
-            ':from' => (string) $fromDate,
-            ':to' => (string) $toDate,
-        ]);
-        $dev = (string) $stmt->fetchColumn();
-        if($dev !== '') return $dev;
-        $stmt = $db->prepare("SELECT `device` FROM `" . self::SNAPSHOT_TABLE . "`
-            WHERE `path_hash`=:ph ORDER BY `capture_width` DESC LIMIT 1");
-        $stmt->execute([':ph' => $ph]);
-        $dev = (string) $stmt->fetchColumn();
-        return $dev !== '' ? $dev : 'desktop';
-    }
-
-    /**
      * Click counts grouped by CSS selector for a path/device/date range.
      * Returns rows: ['selector'=>string, 'label'=>string, 'c'=>count], descending
      * by count. `label` is a representative human-readable label (link/button text,

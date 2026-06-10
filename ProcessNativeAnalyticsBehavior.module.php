@@ -95,20 +95,27 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
         // Device event counts drive both the dropdown labels and the fallback below.
         $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
-        // No explicit device: open on the device with the most clicks for this page.
-        $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile'])
-            ?: $this->core->getDefaultDevice($path, $from, $to);
-        // A device chosen on a previous page carries over in the URL and may have no
-        // data here. If the selected device is empty but another has events, switch
-        // to whichever has the most so we never open on an empty view.
-        if((int) ($deviceCounts[$device] ?? 0) === 0) {
-            $best = ''; $bestCount = 0;
-            foreach(['desktop', 'tablet', 'mobile'] as $v) {
-                $c = (int) ($deviceCounts[$v] ?? 0);
-                if($c > $bestCount) { $bestCount = $c; $best = $v; }
-            }
-            if($best !== '') $device = $best;
+        // The device with the most events for this page — what we default to and
+        // switch back to whenever the page changes.
+        $bestDevice = ''; $bestCount = -1;
+        foreach(['desktop', 'tablet', 'mobile'] as $v) {
+            $c = (int) ($deviceCounts[$v] ?? 0);
+            if($c > $bestCount) { $bestCount = $c; $bestDevice = $v; }
         }
+        $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile']);
+        // When the page changed (the path differs from the one carried in prev_path,
+        // or none was carried), ignore the device that came over in the URL and open
+        // on whichever device has the most results for the new page. An explicit
+        // device change on the same page leaves prev_path === path, so it's kept.
+        $prevPath = $sanitizer->text($input->get('prev_path'));
+        $pageChanged = ($prevPath === '' || $prevPath !== $path);
+        if($pageChanged || $device === '') {
+            if($bestDevice !== '') $device = $bestDevice;
+        } elseif((int) ($deviceCounts[$device] ?? 0) === 0 && $bestDevice !== '') {
+            // Same page, but the chosen device has no data — avoid an empty view.
+            $device = $bestDevice;
+        }
+        if($device === '') $device = 'desktop';
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $copies = $this->core->getCopySelectorHeatmap($path, $device, $from, $to);
@@ -136,6 +143,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
 
         $out  = '<form method="get" class="nab-controls">';
+        // Lets the server detect a page change on submit, so the device resets to
+        // the one with the most results for the newly chosen page.
+        $out .= '<input type="hidden" name="prev_path" value="' . $sanitizer->entities($path) . '">';
         $out .= '<label class="uk-form-label">Top pages <select class="uk-select uk-form-width-medium" data-nab-toppages>' . $topOpts . '</select></label> ';
         $out .= '<label class="uk-form-label nab-pathfind">Page search '
             . '<input type="text" name="path" autocomplete="off" class="uk-input uk-form-width-medium" placeholder="Search tracked paths" value="' . $sanitizer->entities($path) . '" data-nab-pathsearch="1">'
