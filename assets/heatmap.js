@@ -319,6 +319,50 @@
     // then recoloured per-pixel through the HEAT_STOPS palette and composited.
     var DENSITY_RADIUS = 28;
     var DENSITY_MAX_ALPHA = 0.85;
+
+    // Stamp one click's translucent radial blob; stacking these accumulates the
+    // density that's later recoloured through the palette.
+    function paintBlob(octx, x, y, radius) {
+      var g = octx.createRadialGradient(x, y, 0, x, y, radius);
+      g.addColorStop(0, "rgba(0,0,0,0.18)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      octx.fillStyle = g;
+      octx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    }
+
+    // Peak accumulated alpha across the WHOLE document, so the colour scale is
+    // fixed: a cluster keeps its temperature no matter what else is on screen.
+    // Scrolling re-renders only the visible canvas, so normalizing against that
+    // visible max made the same cluster change colour as you scrolled. Computed
+    // once per backdrop size and cached. Scaling coords and radius by the same
+    // factor preserves the overlap pattern (so the peak is unchanged) while a
+    // capped offscreen canvas bounds memory on very tall pages.
+    var densityMax = -1, densityMaxKey = "";
+    function globalDensityMax(fullW, fullH) {
+      var key = fullW + "x" + fullH + ":" + coords.length;
+      if (densityMaxKey === key) return densityMax;
+      var scale = fullH > 4000 ? 4000 / fullH : 1;
+      var cw = Math.max(1, Math.round(fullW * scale));
+      var ch = Math.max(1, Math.round(fullH * scale));
+      var radius = DENSITY_RADIUS * scale;
+      var off = document.createElement("canvas");
+      off.width = cw;
+      off.height = ch;
+      var octx = off.getContext("2d");
+      var i, c, dh;
+      for (i = 0; i < coords.length; i++) {
+        c = coords[i];
+        dh = c[2] || 0;
+        if (dh <= 0) continue;
+        paintBlob(octx, (c[0] / 1000) * fullW * scale, (c[1] / dh) * fullH * scale, radius);
+      }
+      var d = octx.getImageData(0, 0, cw, ch).data, p, maxA = 0;
+      for (p = 3; p < d.length; p += 4) { if (d[p] > maxA) maxA = d[p]; }
+      densityMaxKey = key;
+      densityMax = maxA;
+      return maxA;
+    }
+
     function drawDensity(ctx, w, h, ox, oy) {
       if (!coords.length) return;
       var doc = frameDoc();
@@ -335,7 +379,7 @@
       off.width = w;
       off.height = h;
       var octx = off.getContext("2d");
-      var i, c, dh, x, y, g;
+      var i, c, dh, x, y;
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
         dh = c[2] || 0;
@@ -344,16 +388,12 @@
         y = (c[1] / dh) * fullH - sy + oy;
         if (x < -DENSITY_RADIUS || x > w + DENSITY_RADIUS) continue;
         if (y < -DENSITY_RADIUS || y > h + DENSITY_RADIUS) continue;
-        g = octx.createRadialGradient(x, y, 0, x, y, DENSITY_RADIUS);
-        g.addColorStop(0, "rgba(0,0,0,0.18)");
-        g.addColorStop(1, "rgba(0,0,0,0)");
-        octx.fillStyle = g;
-        octx.fillRect(x - DENSITY_RADIUS, y - DENSITY_RADIUS, DENSITY_RADIUS * 2, DENSITY_RADIUS * 2);
+        paintBlob(octx, x, y, DENSITY_RADIUS);
       }
 
       var img = octx.getImageData(0, 0, w, h);
-      var d = img.data, p, maxA = 0;
-      for (p = 3; p < d.length; p += 4) { if (d[p] > maxA) maxA = d[p]; }
+      var d = img.data, p;
+      var maxA = globalDensityMax(fullW, fullH);
       if (maxA === 0) return;
       if (!PALETTE) PALETTE = buildPalette();
       for (p = 0; p < d.length; p += 4) {
