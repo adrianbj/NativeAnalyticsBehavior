@@ -1007,7 +1007,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                        COALESCE(e.`copies`, 0) AS copy_count,
                        COALESCE(e.`max_scroll`, 0) AS max_scroll,
                        COALESCE(e.`has_dead`, 0) AS has_dead,
-                       COALESCE(e.`has_rage`, 0) AS has_rage
+                       COALESCE(e.`has_rage`, 0) AS has_rage,
+                       entry.`referrer_host` AS referrer_host,
+                       entry.`utm_source` AS utm_source,
+                       entry.`utm_medium` AS utm_medium,
+                       entry.`utm_campaign` AS utm_campaign
                 FROM `pwna_hits` h
                 LEFT JOIN (
                     SELECT `na_session_hash`,
@@ -1020,6 +1024,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                     WHERE `na_session_hash` <> ''
                     GROUP BY `na_session_hash`
                 ) e ON e.`na_session_hash`$collate = h.`session_hash`
+                LEFT JOIN (
+                    SELECT eh.`session_hash` AS sh,
+                           eh.`referrer_host` AS referrer_host,
+                           eh.`utm_source` AS utm_source,
+                           eh.`utm_medium` AS utm_medium,
+                           eh.`utm_campaign` AS utm_campaign
+                    FROM `pwna_hits` eh
+                    INNER JOIN (
+                        SELECT `session_hash`, MIN(`id`) AS first_id
+                        FROM `pwna_hits`
+                        WHERE `session_hash` <> ''
+                        GROUP BY `session_hash`
+                    ) fh ON fh.`first_id` = eh.`id`
+                ) entry ON entry.`sh` = h.`session_hash`
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
@@ -1049,6 +1067,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 'max_scroll' => (int) $r['max_scroll'],
                 'has_dead' => ((int) $r['has_dead']) ? 1 : 0,
                 'has_rage' => ((int) $r['has_rage']) ? 1 : 0,
+                'referrer_host' => trim((string) $r['referrer_host']),
+                'utm_source' => trim((string) $r['utm_source']),
+                'utm_medium' => trim((string) $r['utm_medium']),
+                'utm_campaign' => trim((string) $r['utm_campaign']),
             ];
         }
         return $out;

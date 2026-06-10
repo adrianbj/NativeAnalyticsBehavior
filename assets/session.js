@@ -139,6 +139,13 @@
       if (s.has_rage) sig.push("rage");
       if (s.has_dead) sig.push("dead");
       if (sig.length) parts.push(sig.join("+"));
+      var src = s.referrer_host || s.utm_source;
+      if (src) {
+        var utm = [s.utm_source, s.utm_medium, s.utm_campaign].filter(Boolean).join(" / ");
+        var via = "via " + src;
+        if (utm && utm !== src) via += " (" + utm + ")";
+        parts.push(via);
+      }
       return parts.join(" · ");
     }
 
@@ -235,8 +242,17 @@
       if (journey.browser) parts.push(esc(journey.browser));
       if (journey.os) parts.push(esc(journey.os));
       if (journey.landing) parts.push("landing " + esc(journey.landing));
-      var src = journey.utm_source || journey.referrer_host;
-      if (src) parts.push("via " + esc(src));
+      // Prefer the real referring host over a generic utm_source (e.g. "ads"),
+      // then append the full UTM triple when it adds anything beyond what's shown.
+      // The full referrer URL, when present, goes on hover.
+      var src = journey.referrer_host || journey.utm_source;
+      if (src) {
+        var utm = [journey.utm_source, journey.utm_medium, journey.utm_campaign].filter(Boolean).join(" / ");
+        var via = "via " + esc(src);
+        if (utm && utm !== src) via += " (" + esc(utm) + ")";
+        if (journey.referrer_url) via = '<span title="' + esc(journey.referrer_url).replace(/"/g, "&quot;") + '">' + via + "</span>";
+        parts.push(via);
+      }
       var total = 0;
       journey.pages.forEach(function (p) { total += (p.time_on_page || 0); });
       if (total) parts.push(total + "s on site");
