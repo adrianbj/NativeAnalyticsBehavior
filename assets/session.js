@@ -437,7 +437,10 @@
       if (spinner) spinner.hidden = !on;
     }
 
-    // Centre the highlighted action in the visible window. The iframe scrolls
+    // Bring the highlighted action NEAR THE TOP of the visible window (not
+    // centred): the pin then sits in the first slice of the stage, so the
+    // outer page only needs to reveal the stage top — a much shorter page
+    // scroll that keeps the activated table row in view. The iframe scrolls
     // VERTICALLY (its content is taller than the fixed-height frame), but it
     // can't scroll horizontally — the rebuilt content fits the captured-width
     // iframe (html{overflow-x:hidden}), so the iframe element is wider than the
@@ -448,6 +451,9 @@
       var it = (p.interactions || [])[withinIndex];
       if (!it) return;
       var win = frame.contentWindow;
+      // Headroom above the pin: enough context to read the element, small
+      // enough that the pin stays in the stage's first ~140px.
+      var pad = Math.min(140, Math.floor(frame.clientHeight / 4));
       // Prefer scrolling to the clicked element (pins are anchored to it), so the
       // highlighted pin lands centred even when the recorded coordinates drift
       // from the rebuilt layout. Fall back to those coordinates when the selector
@@ -465,7 +471,7 @@
           // would otherwise leave the actual click — and its pin — off-screen.
           var fx = (typeof it.offx === "number" ? it.offx : 500) / 1000;
           var fy = (typeof it.offy === "number" ? it.offy : 500) / 1000;
-          if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height * fy - frame.clientHeight / 2));
+          if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height * fy - pad));
           if (stage) stage.scrollLeft = Math.max(0, r.left + r.width * fx - stage.clientWidth / 2);
           return;
         }
@@ -475,7 +481,7 @@
       if (!g) return;
       var docY = (it.y_px / it.dh) * g.fullH;
       var docX = (it.x_frac / 1000) * g.fullW;
-      if (win) win.scrollTo(0, Math.max(0, docY - frame.clientHeight / 2));
+      if (win) win.scrollTo(0, Math.max(0, docY - pad));
       if (stage) stage.scrollLeft = Math.max(0, docX - stage.clientWidth / 2);
     }
 
@@ -743,20 +749,22 @@
       }
     }
 
-    // Bring the trail stage into the admin viewport without losing the user's
-    // place: scroll down just enough that the stage bottom reaches the window
-    // bottom (or its top reaches the window top when it's taller than the
-    // window), and when an anchor element is given — the clicked table row —
-    // never scroll it past the top of the viewport.
+    // Bring the top slice of the trail stage into the admin viewport without
+    // losing the user's place. scrollToWithin parks the highlighted pin near
+    // the stage top, so revealing only that first slice is enough — a far
+    // shorter page scroll than showing the whole stage. The anchor element
+    // (the clicked table row) is kept at least 90px inside the top of the
+    // window, clear of the admin theme's ~80px masthead.
     function scrollStageIntoView(anchorEl) {
       if (!stage) return;
       var vh = window.innerHeight || document.documentElement.clientHeight || 0;
       if (!vh) return;
       var sr = stage.getBoundingClientRect();
-      var delta = Math.min(sr.bottom - vh, sr.top - 12);
+      var reveal = Math.min(Math.floor(vh * 0.55), 480, sr.bottom - sr.top);
+      var delta = Math.min(sr.top + reveal - vh, sr.top - 12);
       if (anchorEl) {
         var ar = anchorEl.getBoundingClientRect();
-        delta = Math.min(delta, ar.top - 12);
+        delta = Math.min(delta, ar.top - 90);
       }
       // Absolute scrollTo, not relative scrollBy: smooth scrollBy is applied
       // against the PENDING scroll destination (notably in Chrome), so rapid
