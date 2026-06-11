@@ -109,14 +109,15 @@ class ProcessNativeAnalyticsBehavior extends Process {
         }
         $device = (string) $journey['device'];
         // Site searches come from pwna_hits (recorded by NativeAnalytics),
-        // attached to their page by pwna path_hash and merged into the page's
-        // interactions in time order. A page specialized to a URL-segment
+        // attached to the page the visitor searched FROM (origin_hash: the session's
+        // preceding pageview, falling back to the results page for direct landings)
+        // and merged into the page's interactions in time order. A page specialized to a URL-segment
         // variant carries a different hash and drops its searches rather than
         // misattaching them; query-string search pages keep their canonical
         // pathname, so the normal case always matches.
         $searchesByPage = [];
         foreach($this->core->getSessionSearches($session) as $s) {
-            $searchesByPage[$s['path_hash']][] = $s;
+            $searchesByPage[$s['origin_hash']][] = $s;
         }
         foreach($journey['pages'] as &$p) {
             $rows = $this->core->getSessionInteractions($session, $p['path_hash'], $device, 200);
@@ -271,7 +272,17 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $copies = $this->core->getCopySelectorHeatmap($path, $device, $from, $to);
-        $searches = $this->core->getSearchTermsForPath($path, $device, $from, $to);
+        // Hybrid search attribution: rows for searches initiated on this page
+        // (origin perspective) and rows for searches that landed here
+        // (results perspective), labeled distinctly in the table. They only
+        // overlap on the results page itself.
+        $searches = [];
+        foreach($this->core->getSearchOriginsForPath($path, $device, $from, $to) as $r) {
+            $searches[] = ['label' => (string) $r['label'], 'c' => (int) $r['c'], 'mode' => 'origin'];
+        }
+        foreach($this->core->getSearchTermsForPath($path, $device, $from, $to) as $r) {
+            $searches[] = ['label' => (string) $r['label'], 'c' => (int) $r['c'], 'mode' => 'results'];
+        }
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
         $coords = $this->core->getClickCoordinates($path, $device, $from, $to);
         $deadClicks = $this->core->getDeadClicks($path, $device, $from, $to);
@@ -469,6 +480,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 'label' => (string) ($r['label'] ?? ''),
                 'c' => (int) $r['c'],
                 'type' => 'search',
+                'mode' => (string) ($r['mode'] ?? 'origin'),
                 'dead' => 0,
                 'rage' => 0,
             ];
@@ -492,9 +504,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $label = trim((string) $row['label']);
         $selector = (string) $row['selector'];
         if(($row['type'] ?? '') === 'search') {
-            // The searched term, quoted. No selector — searches aren't tied
-            // to an element, so the row gets no data-nab-sel below.
-            $cell = '<span class="nab-click-label">Search ("' . $sanitizer->entities($label) . '")</span>';
+            // The searched term, quoted; wording reflects the perspective —
+            // initiated here (origin) vs landed here (results). No selector,
+            // so the row gets no data-nab-sel below.
+            $word = (($row['mode'] ?? 'origin') === 'results') ? 'Search results' : 'Searched for';
+            $cell = '<span class="nab-click-label">' . $word . ' ("' . $sanitizer->entities($label) . '")</span>';
         } else {
             $badges = '';
             if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
