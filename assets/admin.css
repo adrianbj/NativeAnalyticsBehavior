@@ -47,6 +47,7 @@
 .nab-session-filters { display: flex; flex-wrap: wrap; align-items: center; gap: .35em 1.1em; margin: 0 0 .6em; font-size: .85em; color: #555; }
 .nab-session-filters label { display: inline-flex; align-items: center; gap: .35em; margin: 0; cursor: pointer; white-space: nowrap; }
 .nab-session-filters input[type="checkbox"] { margin: 0; }
+.nab-filter-spinner { width: 14px; height: 14px; }
 
 .nab-trail { margin-top: 1.5em; }
 .nab-trail-top { display: flex; align-items: center; gap: 1em; margin: 0 0 .5em; }

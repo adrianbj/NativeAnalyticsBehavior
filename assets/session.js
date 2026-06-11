@@ -42,6 +42,7 @@
     var listFilters = { min_time: false, interacted: false, min_scroll: false }; // engagement filter checkboxes
     var listToken = 0;        // bumped per loadList; stale list fetches bail on mismatch
     var refocusFilter = null; // filter checkbox key to refocus after the list re-renders
+    var filterSpinner = null; // spinner in the filter row while a re-fetch is in flight
 
     function frameDoc() {
       return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
@@ -113,12 +114,19 @@
         cb.addEventListener("change", function () {
           listFilters[f.key] = cb.checked;
           refocusFilter = f.key;
+          if (filterSpinner) filterSpinner.hidden = false;
           loadList();
         });
         lab.appendChild(cb);
         lab.appendChild(document.createTextNode(" " + f.text));
         wrap.appendChild(lab);
       });
+      // Shown from a checkbox change until the refreshed list renders (every
+      // render rebuilds this row with the spinner hidden again).
+      filterSpinner = document.createElement("span");
+      filterSpinner.className = "nab-trail-spinner nab-filter-spinner";
+      filterSpinner.hidden = true;
+      wrap.appendChild(filterSpinner);
       return wrap;
     }
 
