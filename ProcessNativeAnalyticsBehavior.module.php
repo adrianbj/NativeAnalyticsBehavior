@@ -69,22 +69,28 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if($path === '') $path = '/';
         $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-29 days'));
         $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
-        $rows = $this->core->getSessionsForPath($path, $from, $to, 50);
-        $total = $this->core->countSessionsForPath($path, $from, $to);
+        // Engagement filters: each ?param=1 activates one criterion; active
+        // criteria AND together. Thresholds are fixed here (10s / 25%).
+        $filters = [
+            'min_seconds' => ((int) $input->get('min_time')) === 1 ? 10 : 0,
+            'interacted' => ((int) $input->get('interacted')) === 1,
+            'min_scroll' => ((int) $input->get('min_scroll')) === 1 ? 25 : 0,
+        ];
+        $rows = $this->core->getSessionsForPath($path, $from, $to, 50, $filters);
+        $stats = $this->core->getSessionStatsForPath($path, $from, $to, $filters);
         $sessions = [];
         foreach($rows as $r) {
             $h = (string) $r['session_hash'];
             $r['hash_short'] = $h !== '' ? substr($h, 0, 8) : '';
             $sessions[] = $r;
         }
-        $scrollStats = $this->core->getScrollStatsForPath($path, $from, $to);
         $this->sendJsonResponse([
             'sessions' => $sessions,
-            'total' => $total,
+            'total' => $stats['total'],
             'showing' => count($sessions),
-            'avg_duration' => $this->core->getAvgSessionDurationForPath($path, $from, $to),
-            'scroll_avg' => $scrollStats['avg'],
-            'scroll_max' => $scrollStats['max'],
+            'avg_duration' => $stats['avg_duration'],
+            'scroll_avg' => $stats['scroll_avg'],
+            'scroll_max' => $stats['scroll_max'],
         ]);
     }
 

@@ -1024,13 +1024,36 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * still appear with a zero count. Only sessions recorded since na_session_hash
      * shipped qualify (older interactions carry an empty hash).
      *
+     * $filters (['min_seconds' => int, 'interacted' => bool,
+     * 'min_scroll' => int]; 0/false disables a criterion) AND together as
+     * HAVING clauses over the per-session aggregates.
+     *
      * @return array<int,array{session_hash:string,started_at:string,last_at:string,duration:int,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int,referrer_host:string,utm_source:string,utm_medium:string,utm_campaign:string}>
      */
-    public function getSessionsForPath($path, $from, $to, $limit = 50) {
+    public function getSessionsForPath($path, $from, $to, $limit = 50, $filters = []) {
         if(!$this->hasHitsTable()) return [];
         $db = $this->wire('database');
         $limit = max(1, min(200, (int) $limit));
         $collate = $this->naHashCollation();
+        $params = [
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':from' => (string) $from,
+            ':to' => (string) $to,
+        ];
+        $having = [];
+        if(!empty($filters['min_seconds'])) {
+            $having[] = "duration >= :minsec";
+            $params[':minsec'] = (int) $filters['min_seconds'];
+        }
+        if(!empty($filters['interacted'])) {
+            $having[] = "(click_count + copy_count) > 0";
+        }
+        if(!empty($filters['min_scroll'])) {
+            $having[] = "max_scroll >= :minscroll";
+            $params[':minscroll'] = (int) $filters['min_scroll'];
+        }
+        $havingSql = $having ? "
+                HAVING " . implode(' AND ', $having) : '';
         $sql = "SELECT h.`session_hash` AS session_hash,
                        MIN(h.`created_at`) AS started_at,
                        MAX(h.`created_at`) AS last_at,
@@ -1077,15 +1100,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
                       AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
                 )
-                GROUP BY h.`session_hash`
+                GROUP BY h.`session_hash`" . $havingSql . "
                 ORDER BY last_at DESC
                 LIMIT " . $limit;
         $stmt = $db->prepare($sql);
-        $stmt->execute([
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':from' => (string) $from,
-            ':to' => (string) $to,
-        ]);
+        $stmt->execute($params);
         $out = [];
         foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
             $dev = (string) $r['device'];
@@ -1112,80 +1131,91 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Count of distinct sessions that qualify for getSessionsForPath() (same
-     * page-and-range filter). Backs the list's "showing N of M" note without
-     * paging the full set.
+     * Aggregate stats for the sessions panel, over the sessions that qualify
+     * for getSessionsForPath() (same page-and-range selection, bot exclusion,
+     * and engagement $filters — see getSessionsForPath for the filter shape).
+     * Returns ['total','avg_duration','scroll_avg','scroll_max'], all int:
+     * - total: distinct qualifying sessions;
+     * - avg_duration: average per-session engaged time in whole seconds (the
+     *   per-session sum of NativeAnalytics' per-hit time_on_page, so the last
+     *   page counts). Unlike NativeAnalytics' own avg_time_on_page (which
+     *   skips sessions whose time beacon never landed), zero-time sessions
+     *   count toward this average unless a filter removes them;
+     * - scroll_avg / scroll_max: average and deepest scroll depth percent on
+     *   THIS page in range over the filtered sessions' per-pageview scroll
+     *   rows (one row per session/page/device holding that view's deepest
+     *   point). Device-independent, matching the panel rather than the
+     *   device-filtered heatmap.
+     * All zeros when the hits table is absent or nothing matches. The page
+     * params appear twice under different names (:ph/:ph2 etc.) because PDO
+     * allows each named param only once per statement.
      */
-    public function countSessionsForPath($path, $from, $to) {
-        if(!$this->hasHitsTable()) return 0;
+    public function getSessionStatsForPath($path, $from, $to, $filters = []) {
+        $empty = ['total' => 0, 'avg_duration' => 0, 'scroll_avg' => 0, 'scroll_max' => 0];
+        if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
         $collate = $this->naHashCollation();
-        $stmt = $db->prepare("SELECT COUNT(DISTINCT h.`session_hash`) FROM `pwna_hits` h
-            WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
-                SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
-                WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
-                  AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
-            )");
-        $stmt->execute([
+        $params = [
             ':ph' => md5('/' . ltrim((string) $path, '/')),
             ':from' => (string) $from,
             ':to' => (string) $to,
-        ]);
-        return (int) $stmt->fetchColumn();
-    }
-
-    /**
-     * Average engaged time per session, in whole seconds, over the sessions
-     * that qualify for getSessionsForPath() (same page-and-range filter and
-     * bot exclusion). Engaged time is the per-session sum of NativeAnalytics'
-     * per-hit time_on_page, so it includes time on the session's last page.
-     * Returns 0 when the hits table is absent, no sessions qualify, or no
-     * time was recorded.
-     * Unlike NativeAnalytics' own avg_time_on_page (which skips sessions whose
-     * time beacon never landed), zero-time sessions count toward this average.
-     */
-    public function getAvgSessionDurationForPath($path, $from, $to) {
-        if(!$this->hasHitsTable()) return 0;
-        $db = $this->wire('database');
-        $collate = $this->naHashCollation();
-        $stmt = $db->prepare("SELECT AVG(t.d) FROM (
-                SELECT SUM(h.`time_on_page`) AS d FROM `pwna_hits` h
+        ];
+        $params[':ph2'] = $params[':ph'];
+        $params[':from2'] = $params[':from'];
+        $params[':to2'] = $params[':to'];
+        $having = [];
+        if(!empty($filters['min_seconds'])) {
+            $having[] = "duration >= :minsec";
+            $params[':minsec'] = (int) $filters['min_seconds'];
+        }
+        if(!empty($filters['interacted'])) {
+            $having[] = "interactions > 0";
+        }
+        if(!empty($filters['min_scroll'])) {
+            $having[] = "session_scroll >= :minscroll";
+            $params[':minscroll'] = (int) $filters['min_scroll'];
+        }
+        $havingSql = $having ? "
+                    HAVING " . implode(' AND ', $having) : '';
+        $sql = "SELECT COUNT(*), AVG(t.`duration`), AVG(t.`page_scroll`), MAX(t.`page_scroll`) FROM (
+                SELECT h.`session_hash` AS sh,
+                       SUM(h.`time_on_page`) AS duration,
+                       COALESCE(e.`interactions`, 0) AS interactions,
+                       COALESCE(e.`session_scroll`, 0) AS session_scroll,
+                       MAX(ps.`page_scroll`) AS page_scroll
+                FROM `pwna_hits` h
+                LEFT JOIN (
+                    SELECT `na_session_hash`,
+                           SUM(`type` IN ('click','copy')) AS interactions,
+                           MAX(`scroll_pct`) AS session_scroll
+                    FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `na_session_hash` <> ''
+                    GROUP BY `na_session_hash`
+                ) e ON e.`na_session_hash`$collate = h.`session_hash`
+                LEFT JOIN (
+                    SELECT `na_session_hash`, MAX(`scroll_pct`) AS page_scroll
+                    FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `type`='scroll' AND `path_hash`=:ph2
+                      AND `created_date` BETWEEN :from2 AND :to2
+                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                    GROUP BY `na_session_hash`
+                ) ps ON ps.`na_session_hash`$collate = h.`session_hash`
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
                       AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
                 )
-                GROUP BY h.`session_hash`
-            ) t");
-        $stmt->execute([
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':from' => (string) $from,
-            ':to' => (string) $to,
-        ]);
-        return (int) round((float) $stmt->fetchColumn());
-    }
-
-    /**
-     * Average and deepest scroll depth (percent) on a page within a date range,
-     * over the per-pageview scroll rows (one per session/page/device, holding
-     * the max scroll_pct that view reached). Device-independent, matching the
-     * sessions panel rather than the device-filtered heatmap. Returns
-     * ['avg' => int, 'max' => int], zeros when no scroll was recorded.
-     */
-    public function getScrollStatsForPath($path, $from, $to) {
-        $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT AVG(`scroll_pct`), MAX(`scroll_pct`) FROM `" . self::EVENTS_TABLE . "`
-            WHERE `type`='scroll' AND `path_hash`=:ph
-              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql());
-        $stmt->execute([
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':from' => (string) $from,
-            ':to' => (string) $to,
-        ]);
+                GROUP BY h.`session_hash`" . $havingSql . "
+            ) t";
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
         $row = $stmt->fetch(\PDO::FETCH_NUM);
+        if(!$row || !(int) $row[0]) return $empty;
         return [
-            'avg' => (int) round((float) ($row[0] ?? 0)),
-            'max' => (int) ($row[1] ?? 0),
+            'total' => (int) $row[0],
+            'avg_duration' => (int) round((float) $row[1]),
+            'scroll_avg' => (int) round((float) $row[2]),
+            'scroll_max' => (int) $row[3],
         ];
     }
 
