@@ -161,10 +161,9 @@
       parts.push(clicks + (clicks === 1 ? " click" : " clicks"));
       if (copies > 0) parts.push(copies + (copies === 1 ? " copy" : " copies"));
       if (scroll > 0) parts.push(scroll + "% scroll");
-      var sig = [];
-      if (s.has_rage) sig.push("rage");
-      if (s.has_dead) sig.push("dead");
-      if (sig.length) parts.push(sig.join("+"));
+      // Dead clicks are too common to be a useful session-level flag; only
+      // rage marks a session as worth drilling into from the label alone.
+      if (s.has_rage) parts.push("rage");
       var src = s.referrer_host || s.utm_source;
       if (src) {
         var utm = [s.utm_source, s.utm_medium, s.utm_campaign].filter(Boolean).join(" / ");
