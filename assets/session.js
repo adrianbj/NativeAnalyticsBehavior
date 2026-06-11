@@ -67,6 +67,17 @@
       return m + ":" + (s < 10 ? "0" + s : String(s));
     }
 
+    function fmtDuration(secs) {
+      secs = Math.round(Number(secs) || 0);
+      if (secs <= 0) return "";
+      var h = Math.floor(secs / 3600);
+      var m = Math.floor((secs % 3600) / 60);
+      var s = secs % 60;
+      var mm = h && m < 10 ? "0" + m : String(m);
+      var ss = s < 10 ? "0" + s : String(s);
+      return h ? h + ":" + mm + ":" + ss : mm + ":" + ss;
+    }
+
     // ---- session list ----
 
     function loadList() {
@@ -115,6 +126,14 @@
       selectSpinner.hidden = true;
       row.appendChild(selectSpinner);
       listEl.appendChild(row);
+      var avg = fmtDuration(data && data.avg_duration);
+      if (avg) {
+        var n = typeof data.total === "number" && data.total > 0 ? data.total : sessions.length;
+        var avgNote = document.createElement("p");
+        avgNote.className = "nab-frust-none";
+        avgNote.textContent = "Avg session length " + avg + " across " + n + " session" + (n === 1 ? "" : "s") + ".";
+        listEl.appendChild(avgNote);
+      }
       if (typeof data.total === "number" && data.total > sessions.length) {
         var note = document.createElement("p");
         note.className = "nab-frust-none";
@@ -131,6 +150,8 @@
       var scroll = s.max_scroll || 0;
       var parts = [fmtWhen(s.started_at)];
       if (s.device) parts.push(s.device);
+      var dur = fmtDuration(s.duration);
+      if (dur) parts.push(dur);
       parts.push(pages + (pages === 1 ? " page" : " pages"));
       parts.push(clicks + (clicks === 1 ? " click" : " clicks"));
       if (copies > 0) parts.push(copies + (copies === 1 ? " copy" : " copies"));
@@ -255,7 +276,8 @@
       }
       var total = 0;
       journey.pages.forEach(function (p) { total += (p.time_on_page || 0); });
-      if (total) parts.push(total + "s on site");
+      var dur = fmtDuration(total);
+      if (dur) parts.push(dur + " on site");
       meta.innerHTML = parts.join(" &middot; ");
     }
 

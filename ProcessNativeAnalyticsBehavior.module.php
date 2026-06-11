@@ -77,7 +77,12 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $r['hash_short'] = $h !== '' ? substr($h, 0, 8) : '';
             $sessions[] = $r;
         }
-        $this->sendJsonResponse(['sessions' => $sessions, 'total' => $total, 'showing' => count($sessions)]);
+        $this->sendJsonResponse([
+            'sessions' => $sessions,
+            'total' => $total,
+            'showing' => count($sessions),
+            'avg_duration' => $this->core->getAvgSessionDurationForPath($path, $from, $to),
+        ]);
     }
 
     // AJAX: one session's full cross-page journey with per-page interactions, as
