@@ -142,12 +142,13 @@
         avgNote.textContent = stats.join(" · ") + ".";
         listEl.appendChild(avgNote);
       }
-      if (typeof data.total === "number" && data.total > sessions.length) {
-        var note = document.createElement("p");
-        note.className = "nab-frust-none";
-        note.textContent = "Showing " + sessions.length + " of " + data.total + " sessions.";
-        listEl.appendChild(note);
-      }
+      var total = typeof data.total === "number" && data.total > 0 ? data.total : sessions.length;
+      var note = document.createElement("p");
+      note.className = "nab-frust-none";
+      note.textContent = total > sessions.length
+        ? "Showing " + sessions.length + " of " + total + " sessions."
+        : total + " session" + (total === 1 ? "" : "s") + ".";
+      listEl.appendChild(note);
       maybeDeepLink();
     }
 
