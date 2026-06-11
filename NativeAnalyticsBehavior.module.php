@@ -1024,7 +1024,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * still appear with a zero count. Only sessions recorded since na_session_hash
      * shipped qualify (older interactions carry an empty hash).
      *
-     * @return array<int,array{session_hash:string,started_at:string,last_at:string,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int}>
+     * @return array<int,array{session_hash:string,started_at:string,last_at:string,duration:int,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int,referrer_host:string,utm_source:string,utm_medium:string,utm_campaign:string}>
      */
     public function getSessionsForPath($path, $from, $to, $limit = 50) {
         if(!$this->hasHitsTable()) return [];
@@ -1141,6 +1141,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * per-hit time_on_page, so it includes time on the session's last page.
      * Returns 0 when the hits table is absent, no sessions qualify, or no
      * time was recorded.
+     * Unlike NativeAnalytics' own avg_time_on_page (which skips sessions whose
+     * time beacon never landed), zero-time sessions count toward this average.
      */
     public function getAvgSessionDurationForPath($path, $from, $to) {
         if(!$this->hasHitsTable()) return 0;
