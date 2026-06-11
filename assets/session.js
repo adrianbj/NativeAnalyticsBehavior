@@ -423,7 +423,7 @@
       if (!tableEl) return;
       tableEl.innerHTML = "";
       if (!flat.length) {
-        tableEl.innerHTML = '<p class="nab-frust-none">No clicks or copies recorded.</p>';
+        tableEl.innerHTML = '<p class="nab-frust-none">No interactions recorded.</p>';
         return;
       }
       var firstTs = "";
@@ -450,9 +450,12 @@
         var sig = "";
         if (it.rage) sig = ' <span class="nab-row-sig is-rage">rage</span>';
         else if (it.dead) sig = ' <span class="nab-row-sig is-dead">dead</span>';
+        var elCell = it.type === "search"
+          ? 'Search ("' + esc(it.label) + '")'
+          : esc(it.label || it.selector || it.type);
         tr.innerHTML =
           '<td><span class="nab-rail-path" title="' + esc(p.page_title || p.path) + '">' + esc(p.path) + '</span></td>' +
-          '<td>' + esc(it.label || it.selector || it.type) + sig + '</td>' +
+          '<td>' + elCell + sig + '</td>' +
           '<td>' + esc(it.type) + '</td>' +
           '<td class="nab-click-num">' + esc(fmtElapsed(firstTs, it.t)) + '</td>';
         tr.addEventListener("click", function () { setStep(fi); scrollStageIntoView(tr); });
@@ -615,8 +618,13 @@
       var g = NABStage.geom(frame, markersLayer);
       if (!g) return;
       var doc = frameDoc();
+      // Searches have no coordinates and never pin; skip them when numbering
+      // so visible pin numbers stay contiguous.
+      var num = 0;
       ints.forEach(function (it, ii) {
-        var pin = makePin(p, it, ii);
+        if (it.type === "search") return;
+        num++;
+        var pin = makePin(p, it, ii, num);
         if (!placePin(pin, it, g, doc)) return;
         markersLayer.appendChild(pin);
       });
@@ -639,7 +647,9 @@
         li.appendChild(makePin(p, it, ii));
         var span = document.createElement("span");
         span.className = "nab-marker-text";
-        span.textContent = (it.label || it.selector || it.type);
+        span.textContent = it.type === "search"
+          ? 'Search ("' + (it.label || "") + '")'
+          : (it.label || it.selector || it.type);
         li.appendChild(span);
         list.appendChild(li);
       });
@@ -647,12 +657,12 @@
       applyHighlight(highlightWithin);
     }
 
-    function makePin(p, it, withinIndex) {
+    function makePin(p, it, withinIndex, displayNum) {
       var pin = document.createElement("button");
       pin.type = "button";
       pin.className = "nab-marker nab-marker-" + (it.type === "copy" ? "copy" : "click") +
         (it.dead ? " is-dead" : "") + (it.rage ? " is-rage" : "");
-      pin.textContent = String(withinIndex + 1);
+      pin.textContent = String(displayNum || withinIndex + 1);
       pin.title = (it.label || it.selector || it.type) + (it.t ? " · " + it.t : "");
       pin.setAttribute("data-within", String(withinIndex));
       pin.addEventListener("click", function () {

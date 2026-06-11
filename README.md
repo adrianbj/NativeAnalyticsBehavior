@@ -5,6 +5,7 @@ Behavioral analytics companion for the [NativeAnalytics](https://github.com/adri
 ## Features
 - **Heatmaps** — click and scroll-depth heatmaps per page and device. Clicks are anchored to the element that was clicked (selector + intra-element offset), so blobs stay put even when the rebuilt layout shifts.
 - **Frustration signals** — rage clicks (rapid repeated clicks in one spot), dead clicks (clicks on non-interactive elements), and copy events, each surfaced per element.
+- **Site-search terms** — the terms NativeAnalytics records from results-page URLs (its `searchQueryVars` setting) are surfaced in the behavior tables, per page and per session. Nothing extra is collected.
 - **Single-session trail viewer** — replay one visitor's cross-page journey over a rebuilt, masked snapshot of each page, with click/copy pins placed in time order and per-page scroll depth.
 - **Versioned page snapshots** — the collector captures a masked DOM snapshot (via rrweb-snapshot) once per session per page. The server stores a new version only when the markup actually changes (content-hash dedup), and the trail viewer shows the version that was live during each session's visit.
 - **Bot exclusion** — sessions NativeAnalytics flagged as bots can be hidden.
