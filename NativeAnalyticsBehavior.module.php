@@ -1062,7 +1062,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                        COUNT(DISTINCT h.`path_hash`) AS page_count,
                        COALESCE(e.`clicks`, 0) AS click_count,
                        COALESCE(e.`copies`, 0) AS copy_count,
-                       COALESCE(e.`max_scroll`, 0) AS max_scroll,
+                       COALESCE(e.`ms`, 0) AS max_scroll,
                        COALESCE(e.`has_dead`, 0) AS has_dead,
                        COALESCE(e.`has_rage`, 0) AS has_rage,
                        entry.`referrer_host` AS referrer_host,
@@ -1076,7 +1076,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                            SUM(`type`='copy') AS copies,
                            MAX(`dead`) AS has_dead,
                            MAX(`rage`) AS has_rage,
-                           MAX(`scroll_pct`) AS max_scroll
+                           MAX(`scroll_pct`) AS ms
                     FROM `" . self::EVENTS_TABLE . "`
                     WHERE `na_session_hash` <> ''
                     GROUP BY `na_session_hash`
@@ -1142,9 +1142,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      *   skips sessions whose time beacon never landed), zero-time sessions
      *   count toward this average unless a filter removes them;
      * - scroll_avg / scroll_max: average and deepest scroll depth percent on
-     *   THIS page in range over the filtered sessions' per-pageview scroll
-     *   rows (one row per session/page/device holding that view's deepest
-     *   point). Device-independent, matching the panel rather than the
+     *   THIS page in range, one value per filtered session — its deepest
+     *   pageview on the page (sessions with no scroll row are skipped).
+     *   Device-independent, matching the panel rather than the
      *   device-filtered heatmap.
      * All zeros when the hits table is absent or nothing matches. The page
      * params appear twice under different names (:ph/:ph2 etc.) because PDO
@@ -1177,21 +1177,31 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
         $havingSql = $having ? "
                     HAVING " . implode(' AND ', $having) : '';
-        $sql = "SELECT COUNT(*), AVG(t.`duration`), AVG(t.`page_scroll`), MAX(t.`page_scroll`) FROM (
-                SELECT h.`session_hash` AS sh,
-                       SUM(h.`time_on_page`) AS duration,
-                       COALESCE(e.`interactions`, 0) AS interactions,
-                       COALESCE(e.`session_scroll`, 0) AS session_scroll,
-                       MAX(ps.`page_scroll`) AS page_scroll
-                FROM `pwna_hits` h
+        // The session-wide events rollup is the heaviest scan here (a full
+        // GROUP BY over nab_events) and only feeds the interacted/min_scroll
+        // criteria, so it is joined only when one of them is active. Its inner
+        // aliases (ic/ms) deliberately differ from the outer COALESCE aliases:
+        // MySQL resolves HAVING names against FROM columns before select
+        // aliases, and matching names would bind HAVING to the nullable
+        // pre-COALESCE columns.
+        $needsEvents = !empty($filters['interacted']) || !empty($filters['min_scroll']);
+        $eventCols = $needsEvents ? "
+                       COALESCE(e.`ic`, 0) AS interactions,
+                       COALESCE(e.`ms`, 0) AS session_scroll," : "";
+        $eventJoin = $needsEvents ? "
                 LEFT JOIN (
                     SELECT `na_session_hash`,
-                           SUM(`type` IN ('click','copy')) AS interactions,
-                           MAX(`scroll_pct`) AS session_scroll
+                           SUM(`type` IN ('click','copy')) AS ic,
+                           MAX(`scroll_pct`) AS ms
                     FROM `" . self::EVENTS_TABLE . "`
                     WHERE `na_session_hash` <> ''
                     GROUP BY `na_session_hash`
-                ) e ON e.`na_session_hash`$collate = h.`session_hash`
+                ) e ON e.`na_session_hash`$collate = h.`session_hash`" : "";
+        $sql = "SELECT COUNT(*), AVG(t.`duration`), AVG(t.`page_scroll`), MAX(t.`page_scroll`) FROM (
+                SELECT h.`session_hash` AS sh,
+                       SUM(h.`time_on_page`) AS duration,$eventCols
+                       MAX(ps.`page_scroll`) AS page_scroll
+                FROM `pwna_hits` h" . $eventJoin . "
                 LEFT JOIN (
                     SELECT `na_session_hash`, MAX(`scroll_pct`) AS page_scroll
                     FROM `" . self::EVENTS_TABLE . "`
