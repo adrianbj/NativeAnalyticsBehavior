@@ -40,6 +40,8 @@
     var focusedWithin = -1;   // interaction whose pin is element-anchored (or -1)
     var focusedEl = null;     // the resolved element that pin is anchored to
     var listFilters = { min_time: false, interacted: false, min_scroll: false }; // engagement filter checkboxes
+    var listToken = 0;        // bumped per loadList; stale list fetches bail on mismatch
+    var refocusFilter = null; // filter checkbox key to refocus after the list re-renders
 
     function frameDoc() {
       return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
@@ -93,8 +95,9 @@
       if (!hasSessions && !filtersActive()) return null;
       var wrap = document.createElement("div");
       wrap.className = "nab-session-filters";
+      wrap.setAttribute("role", "group");
+      wrap.setAttribute("aria-label", "Session engagement filters");
       var label = document.createElement("span");
-      label.className = "nab-session-filters-label";
       label.textContent = "Show only sessions with:";
       wrap.appendChild(label);
       [
@@ -106,8 +109,10 @@
         var cb = document.createElement("input");
         cb.type = "checkbox";
         cb.checked = !!listFilters[f.key];
+        cb.setAttribute("data-nab-filter", f.key);
         cb.addEventListener("change", function () {
           listFilters[f.key] = cb.checked;
+          refocusFilter = f.key;
           loadList();
         });
         lab.appendChild(cb);
@@ -117,7 +122,22 @@
       return wrap;
     }
 
+    // Re-renders replace the checkbox that was just toggled; give it focus
+    // back so keyboard users aren't dropped to <body> on every toggle. The
+    // keys are our own fixed strings, so they're selector-safe.
+    function restoreFilterFocus() {
+      if (!refocusFilter) return;
+      var cb = listEl.querySelector('input[data-nab-filter="' + refocusFilter + '"]');
+      refocusFilter = null;
+      if (cb) cb.focus();
+    }
+
     function loadList() {
+      // Token mirrors loadPage's loadToken: rapid filter toggles fire
+      // overlapping fetches with different params, and a stale response must
+      // not render over a newer one (the checkboxes re-derive from
+      // listFilters, so a stale list would disagree with them).
+      var token = ++listToken;
       var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "/") +
         "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "") +
         (listFilters.min_time ? "&min_time=1" : "") +
@@ -125,9 +145,19 @@
         (listFilters.min_scroll ? "&min_scroll=1" : "");
       fetch(url, { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
-        .then(function (data) { renderList(data); })
+        .then(function (data) { if (token === listToken) renderList(data); })
         .catch(function () {
-          listEl.innerHTML = '<p class="nab-frust-none">Could not load sessions.</p>';
+          if (token !== listToken) return;
+          // Keep the filter row on errors too — an over-aggressive filter may
+          // be exactly what broke the request, and it must stay uncheckable.
+          listEl.innerHTML = "";
+          var fr = renderFilterRow(false);
+          if (fr) listEl.appendChild(fr);
+          var err = document.createElement("p");
+          err.className = "nab-frust-none";
+          err.textContent = "Could not load sessions.";
+          listEl.appendChild(err);
+          restoreFilterFocus();
         });
     }
 
@@ -143,6 +173,7 @@
           ? "No sessions match the active filters."
           : "No recorded sessions visited this page in range.";
         listEl.appendChild(none);
+        restoreFilterFocus();
         maybeDeepLink();
         return;
       }
@@ -169,7 +200,19 @@
       // startup maybeDeepLink, which ran before this select existed — sync it.
       // currentUrlSession() only matches 64-hex hashes, so it's selector-safe.
       var cur = currentUrlSession();
-      if (cur && sel.querySelector('option[value="' + cur + '"]')) sel.value = cur;
+      if (cur) {
+        // Active filters may exclude the open session from the list; keep the
+        // select truthful with a synthetic option so the trail can still be
+        // closed by switching back to "All sessions" (a select can't fire
+        // change from its placeholder when it's already silently on it).
+        if (!sel.querySelector('option[value="' + cur + '"]')) {
+          var curOpt = document.createElement("option");
+          curOpt.value = cur;
+          curOpt.textContent = "Current session (not in the filtered list)";
+          sel.appendChild(curOpt);
+        }
+        sel.value = cur;
+      }
       listEl.innerHTML = "";
       var filterRow = renderFilterRow(true);
       if (filterRow) listEl.appendChild(filterRow);
@@ -199,6 +242,7 @@
         ? "Showing " + sessions.length + " of " + total + " sessions."
         : total + " session" + (total === 1 ? "" : "s") + ".";
       listEl.appendChild(note);
+      restoreFilterFocus();
       maybeDeepLink();
     }
 
