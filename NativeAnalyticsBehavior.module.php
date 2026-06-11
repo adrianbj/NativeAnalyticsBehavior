@@ -2,8 +2,6 @@
 
 class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableModule {
 
-    const VERSION = 1;
-
     const EVENTS_TABLE = 'nab_events';
     const COLLECT_ROUTE = '/nab-collect';
     const SNAPSHOT_TABLE = 'nab_snapshots';
@@ -26,7 +24,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return [
             'title' => 'NativeAnalyticsBehavior',
             'summary' => 'Behavioral analytics companion for NativeAnalytics: heatmaps, insights and session recordings.',
-            'version' => self::VERSION,
+            'version' => '0.1.0',
             'author' => 'Adrian Jones',
             'icon' => 'fire',
             'autoload' => true,

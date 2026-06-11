@@ -6,7 +6,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         return [
             'title' => 'NativeAnalyticsBehavior Dashboard',
             'summary' => 'Dashboard for NativeAnalyticsBehavior (heatmaps).',
-            'version' => 1,
+            'version' => '0.1.0',
             'author' => 'Adrian Jones',
             'permission' => 'nativeanalyticsbehavior-view',
             'permissions' => ['nativeanalyticsbehavior-view' => 'View NativeAnalyticsBehavior dashboard'],
