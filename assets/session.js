@@ -736,8 +736,10 @@
         // can't scroll horizontally (html{overflow-x:hidden}), so the panel's x
         // in stage-scroll coords equals its iframe-relative left. Align it to the
         // stage's left edge — don't mix in the stage's own parent-page rect.
+        // The OUTER page is deliberately not scrolled here: only the activation
+        // entry points do that (they know which element must stay in view), and
+        // a second unclamped scroll from this path would override their clamp.
         stage.scrollLeft = Math.max(0, pr.left - 4);
-        scrollStageIntoView();
       }
     }
 
