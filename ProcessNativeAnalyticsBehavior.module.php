@@ -140,7 +140,16 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 ];
             }
             if($pageSearches) {
-                usort($rows, function($a, $b) { return strcmp((string) $a['t'], (string) $b['t']); });
+                // usort is unstable before PHP 8.0 and timestamps are
+                // second-granularity, so tie-break on the pre-sort index to
+                // keep same-second interactions in their recorded order.
+                foreach($rows as $i => &$rr) $rr['_i'] = $i;
+                unset($rr);
+                usort($rows, function($a, $b) {
+                    return strcmp((string) $a['t'], (string) $b['t']) ?: ($a['_i'] <=> $b['_i']);
+                });
+                foreach($rows as &$rr) unset($rr['_i']);
+                unset($rr);
                 $p['interaction_count'] = (int) $p['interaction_count'] + count($pageSearches);
             }
             $p['interactions'] = $rows;
@@ -482,14 +491,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
     protected function interactionRow($row, $sanitizer) {
         $label = trim((string) $row['label']);
         $selector = (string) $row['selector'];
-        $badges = '';
-        if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
-        if($row['rage'] > 0) $badges .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
         if(($row['type'] ?? '') === 'search') {
             // The searched term, quoted. No selector — searches aren't tied
             // to an element, so the row gets no data-nab-sel below.
             $cell = '<span class="nab-click-label">Search ("' . $sanitizer->entities($label) . '")</span>';
         } else {
+            $badges = '';
+            if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
+            if($row['rage'] > 0) $badges .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
             $cell = $label !== ''
                 ? '<span class="nab-click-label">' . $sanitizer->entities($label) . $badges . '</span>'
                 : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
