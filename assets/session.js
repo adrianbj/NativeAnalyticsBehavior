@@ -345,9 +345,9 @@
           '<td>' + esc(it.label || it.selector || it.type) + sig + '</td>' +
           '<td>' + esc(it.type) + '</td>' +
           '<td class="nab-click-num">' + esc(fmtElapsed(firstTs, it.t)) + '</td>';
-        tr.addEventListener("click", function () { setStep(fi); scrollStageIntoView(); });
+        tr.addEventListener("click", function () { setStep(fi); scrollStageIntoView(tr); });
         tr.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStep(fi); scrollStageIntoView(); }
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStep(fi); scrollStageIntoView(tr); }
         });
         tbody.appendChild(tr);
       });
@@ -741,11 +741,22 @@
       }
     }
 
-    // Bring the trail stage into the admin viewport. The whole-session table
-    // can grow tall enough to push the stage off-screen, so stepping from a
-    // table row (or revealing a hidden panel) centres the stage in the window.
-    function scrollStageIntoView() {
-      if (stage && stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Bring the trail stage into the admin viewport without losing the user's
+    // place: scroll down just enough that the stage bottom reaches the window
+    // bottom (or its top reaches the window top when it's taller than the
+    // window), and when an anchor element is given — the clicked table row —
+    // never scroll it past the top of the viewport.
+    function scrollStageIntoView(anchorEl) {
+      if (!stage) return;
+      var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      if (!vh) return;
+      var sr = stage.getBoundingClientRect();
+      var delta = Math.min(sr.bottom - vh, sr.top - 12);
+      if (anchorEl) {
+        var ar = anchorEl.getBoundingClientRect();
+        delta = Math.min(delta, ar.top - 12);
+      }
+      if (delta > 0) window.scrollBy({ top: delta, behavior: "smooth" });
     }
 
     // Reposition existing pins without rebuilding (scroll/resize).
