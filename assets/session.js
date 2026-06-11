@@ -705,6 +705,12 @@
       applyHighlight(withinIndex);
       if (revealHighlighted(p, withinIndex)) return;
       if (withinIndex >= 0) scrollToWithin(p, withinIndex);
+      // A search step triggers no iframe/stage scroll, so the scroll-driven
+      // pin repositioning never fires — and a pin clearReveal() just detached
+      // from a re-hidden panel would keep floating over nothing. Reposition
+      // explicitly for that one no-scroll case.
+      var it = withinIndex >= 0 ? (p.interactions || [])[withinIndex] : null;
+      if (it && it.type === "search") positionMarkers();
     }
 
     // Returns true when it revealed a hidden panel and took over pin placement

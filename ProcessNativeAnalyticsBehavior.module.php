@@ -390,7 +390,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             }
             $out .= '</tbody></table></div>';
         } else {
-            $out .= '<p class="nab-frust-none">No clicks or copies recorded.</p>';
+            $out .= '<p class="nab-frust-none">No interactions recorded.</p>';
         }
         $out .= '</div>';
 
