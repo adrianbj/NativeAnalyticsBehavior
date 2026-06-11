@@ -1,6 +1,6 @@
 # NativeAnalyticsBehavior
 
-Behavioral analytics companion for the [NativeAnalytics](https://github.com/adrianbj/NativeAnalytics) ProcessWire module. It reuses NativeAnalytics' visitor/session identity and consent gating, but stores its own data and ships its own dashboard under **Setup > Behavior**.
+Behavioral analytics companion for the [NativeAnalytics](https://github.com/adrianbj/NativeAnalytics) ProcessWire module. It reuses NativeAnalytics' visitor/session identity and consent gating, stores its own data, and surfaces its reports as a **Behavior** tab inside the NativeAnalytics dashboard.
 
 ## Features
 - **Heatmaps** — click and scroll-depth heatmaps per page and device. Clicks are anchored to the element that was clicked (selector + intra-element offset), so blobs stay put even when the rebuilt layout shifts.
