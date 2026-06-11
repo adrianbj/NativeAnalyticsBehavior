@@ -247,6 +247,15 @@
     return near >= RAGE_MIN;
   }
 
+  // Some visitors habitually double-click links. The two clicks land on the same
+  // target within the browser's double-click window and produce one navigation,
+  // so the second is noise that double-counts the click. Collapse a click that
+  // repeats the immediately-preceding one — same selector, within DBLCLICK_MS and
+  // DBLCLICK_PX — into a single recorded click. Genuine rage bursts (3+ rapid
+  // clicks) are exempt: those are kept as a frustration signal.
+  var lastClick = null; // {t, selector, x, y} of the last queued click
+  var DBLCLICK_MS = 350, DBLCLICK_PX = 12;
+
   // Double/triple-clicking to select text produces the same same-spot click
   // cluster as rage and lands on non-interactive text (so it also reads as
   // "dead"). If the click left an active text selection, it's a copy gesture,
@@ -290,6 +299,19 @@
     var target = resolveTarget(e.target);
     if (isContainerClick(target)) return;
     var selecting = hasTextSelection();
+    var now = Date.now();
+    var selector = cssSelector(e.target);
+    // Compute rage first so the rolling buffer sees every click even when the
+    // double-click duplicate below is dropped.
+    var rage = (!selecting && isRageClick(now, e.pageX, e.pageY)) ? 1 : 0;
+    if (!rage && lastClick && selector === lastClick.selector &&
+        now - lastClick.t <= DBLCLICK_MS &&
+        Math.abs(e.pageX - lastClick.x) <= DBLCLICK_PX &&
+        Math.abs(e.pageY - lastClick.y) <= DBLCLICK_PX) {
+      lastClick.t = now; // refresh so a third quick click also collapses
+      return;
+    }
+    lastClick = { t: now, selector: selector, x: e.pageX, y: e.pageY };
     var off = elementOffset(e.target, e.clientX, e.clientY);
     queue.push({
       type: "click",
@@ -299,12 +321,12 @@
       y_px: Math.round(e.pageY),
       vw: Math.round(window.innerWidth || 0),
       dh: Math.round(docHeight()),
-      selector: cssSelector(e.target),
+      selector: selector,
       offx: off.x,
       offy: off.y,
       label: clickLabel(target),
       dead: (!selecting && isDeadClick(e.target)) ? 1 : 0,
-      rage: (!selecting && isRageClick(Date.now(), e.pageX, e.pageY)) ? 1 : 0,
+      rage: rage,
       visitorId: visitorId,
       sessionId: sessionId
     });
