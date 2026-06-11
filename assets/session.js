@@ -39,6 +39,7 @@
     var revealRestore = null; // undoes any off-canvas reveal for the current step
     var focusedWithin = -1;   // interaction whose pin is element-anchored (or -1)
     var focusedEl = null;     // the resolved element that pin is anchored to
+    var listFilters = { min_time: false, interacted: false, min_scroll: false }; // engagement filter checkboxes
 
     function frameDoc() {
       return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
@@ -80,9 +81,48 @@
 
     // ---- session list ----
 
+    function filtersActive() {
+      return listFilters.min_time || listFilters.interacted || listFilters.min_scroll;
+    }
+
+    // The "Show only sessions with:" checkbox row. State lives in listFilters
+    // so it survives re-renders; any change re-fetches the filtered list. The
+    // row also renders when active filters empty the list, so they can be
+    // unchecked; it's omitted only when the page simply has no sessions.
+    function renderFilterRow(hasSessions) {
+      if (!hasSessions && !filtersActive()) return null;
+      var wrap = document.createElement("div");
+      wrap.className = "nab-session-filters";
+      var label = document.createElement("span");
+      label.className = "nab-session-filters-label";
+      label.textContent = "Show only sessions with:";
+      wrap.appendChild(label);
+      [
+        { key: "min_time", text: "10s+ duration" },
+        { key: "interacted", text: "clicks/copies" },
+        { key: "min_scroll", text: "25%+ scroll" }
+      ].forEach(function (f) {
+        var lab = document.createElement("label");
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!listFilters[f.key];
+        cb.addEventListener("change", function () {
+          listFilters[f.key] = cb.checked;
+          loadList();
+        });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(" " + f.text));
+        wrap.appendChild(lab);
+      });
+      return wrap;
+    }
+
     function loadList() {
       var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "/") +
-        "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "");
+        "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "") +
+        (listFilters.min_time ? "&min_time=1" : "") +
+        (listFilters.interacted ? "&interacted=1" : "") +
+        (listFilters.min_scroll ? "&min_scroll=1" : "");
       fetch(url, { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
         .then(function (data) { renderList(data); })
@@ -94,7 +134,15 @@
     function renderList(data) {
       var sessions = (data && data.sessions) || [];
       if (!sessions.length) {
-        listEl.innerHTML = '<p class="nab-frust-none">No recorded sessions visited this page in range.</p>';
+        listEl.innerHTML = "";
+        var emptyFilters = renderFilterRow(false);
+        if (emptyFilters) listEl.appendChild(emptyFilters);
+        var none = document.createElement("p");
+        none.className = "nab-frust-none";
+        none.textContent = filtersActive()
+          ? "No sessions match the active filters."
+          : "No recorded sessions visited this page in range.";
+        listEl.appendChild(none);
         maybeDeepLink();
         return;
       }
@@ -123,6 +171,8 @@
       var cur = currentUrlSession();
       if (cur && sel.querySelector('option[value="' + cur + '"]')) sel.value = cur;
       listEl.innerHTML = "";
+      var filterRow = renderFilterRow(true);
+      if (filterRow) listEl.appendChild(filterRow);
       var row = document.createElement("div");
       row.className = "nab-session-row";
       row.appendChild(sel);
