@@ -314,43 +314,31 @@ class ProcessNativeAnalyticsBehavior extends Process {
             . ' · ' . $scrollTotal . ' scroll ' . ($scrollTotal === 1 ? 'session' : 'sessions') . '.'
             . ' <span id="nab-unmatched"></span></p>';
 
-        // Two columns complement the visual heatmap. Left: the top-clicked
-        // elements (including ones that don't resolve in the backdrop — the
-        // "unmatched" overlay can't show those). Right: frustration signals
-        // (dead/rage clicks) stacked above the scroll-reach table, which is built
-        // client-side by heatmap.js (it needs the laid-out backdrop to locate
-        // each heading/form), so its container is just a placeholder.
+        // Two columns complement the visual heatmap. Left: one unified table of
+        // clicks and copies (including elements that don't resolve in the
+        // backdrop — the "unmatched" overlay can't show those), with dead/rage
+        // frustration signals folded in as badges, mirroring the session-view
+        // table. Right: the scroll-reach table, which is built client-side by
+        // heatmap.js (it needs the laid-out backdrop to locate each
+        // heading/form), so its container is just a placeholder.
         $out .= '<div class="pwna-grid-2">';
 
         $out .= '<div class="pwna-panel">';
-        if($clicks) {
-            $out .= '<h3 class="nab-frust-title">Most clicked</h3>';
+        $out .= '<h3 class="nab-frust-title">Top interactions</h3>';
+        $interactions = $this->buildInteractionRows($clicks, $copies, $deadClicks, $rageClicks);
+        if($interactions) {
             $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
-            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
-            foreach(array_slice($clicks, 0, 20) as $c) {
-                $out .= $this->clickRow($c, (int) $c['c'], $sanitizer);
+            $out .= '<thead><tr><th>Element</th><th>Type</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
+            foreach($interactions as $r) {
+                $out .= $this->interactionRow($r, $sanitizer);
             }
             $out .= '</tbody></table></div>';
-        }
-        if($copies) {
-            $out .= '<h3 class="nab-frust-title">Most copied</h3>';
-            $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
-            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Copies</th></tr></thead><tbody>';
-            foreach(array_slice($copies, 0, 20) as $c) {
-                $out .= $this->clickRow($c, (int) $c['c'], $sanitizer);
-            }
-            $out .= '</tbody></table></div>';
+        } else {
+            $out .= '<p class="nab-frust-none">No clicks or copies recorded.</p>';
         }
         $out .= '</div>';
 
         $out .= '<div class="pwna-panel">';
-        // Frustration signals: dead clicks (on non-interactive elements) and rage
-        // clicks (rapid repeated taps in one spot). Only shown when present so the
-        // dashboard stays quiet on healthy pages.
-        if($deadClicks || $rageClicks) {
-            $out .= $this->renderFrustrationTable('Dead clicks', 'Clicks on elements that do nothing', $deadClicks, $sanitizer);
-            $out .= $this->renderFrustrationTable('Rage clicks', 'Rapid repeated clicks in one spot', $rageClicks, $sanitizer);
-        }
         $out .= '<div id="nab-scroll-sections"></div>';
         $out .= '</div>';
 
@@ -385,46 +373,69 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
-     * One element row for the click/copy/frustration tables: the readable label
-     * (falling back to the raw selector) and the count. When a selector is known
-     * the row carries it in data-nab-sel and is made focusable, so heatmap.js can
+     * Merge click and copy heatmap rows into one list for the unified
+     * "Top interactions" table. Dead/rage counts are folded into their click
+     * rows by selector (frustration flags only exist on click events). Rows
+     * sort by count descending; the list is capped at $cap rows, except rows
+     * carrying a dead/rage badge, which are always kept so frustration
+     * signals never drop out of view.
+     */
+    protected function buildInteractionRows($clicks, $copies, $deadClicks, $rageClicks, $cap = 25) {
+        $dead = [];
+        foreach($deadClicks as $r) $dead[(string) $r['selector']] = (int) $r['c'];
+        $rage = [];
+        foreach($rageClicks as $r) $rage[(string) $r['selector']] = (int) $r['c'];
+        $rows = [];
+        foreach($clicks as $r) {
+            $sel = (string) $r['selector'];
+            $rows[] = [
+                'selector' => $sel,
+                'label' => (string) ($r['label'] ?? ''),
+                'c' => (int) $r['c'],
+                'type' => 'click',
+                'dead' => isset($dead[$sel]) ? $dead[$sel] : 0,
+                'rage' => isset($rage[$sel]) ? $rage[$sel] : 0,
+            ];
+        }
+        foreach($copies as $r) {
+            $rows[] = [
+                'selector' => (string) $r['selector'],
+                'label' => (string) ($r['label'] ?? ''),
+                'c' => (int) $r['c'],
+                'type' => 'copy',
+                'dead' => 0,
+                'rage' => 0,
+            ];
+        }
+        usort($rows, function($a, $b) { return $b['c'] <=> $a['c']; });
+        $kept = array_slice($rows, 0, $cap);
+        foreach(array_slice($rows, $cap) as $r) {
+            if($r['dead'] > 0 || $r['rage'] > 0) $kept[] = $r;
+        }
+        return $kept;
+    }
+
+    /**
+     * One row of the unified interactions table: the readable label (falling
+     * back to the raw selector) with inline dead/rage badge counts, the
+     * interaction type, and the count. When a selector is known the row
+     * carries it in data-nab-sel and is made focusable, so heatmap.js can
      * scroll the backdrop to that element on click.
      */
-    protected function clickRow($row, $count, $sanitizer) {
-        $label = trim((string) ($row['label'] ?? ''));
-        $selector = (string) ($row['selector'] ?? '');
+    protected function interactionRow($row, $sanitizer) {
+        $label = trim((string) $row['label']);
+        $selector = (string) $row['selector'];
         $cell = $label !== ''
             ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
             : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . '</code>';
+        if($row['dead'] > 0) $cell .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
+        if($row['rage'] > 0) $cell .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
         $attrs = $selector !== ''
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '" tabindex="0"'
             : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
-            . '<td class="nab-click-num">' . $count . '</td></tr>';
-    }
-
-    /**
-     * One frustration-signal section (dead or rage clicks), stacked in the right
-     * column above the scroll-reach table. $rows are selector/label/count rows
-     * from the core; the cell renders the readable label, falling back to the raw
-     * selector, and shows "None detected." when there are no rows.
-     */
-    protected function renderFrustrationTable($title, $subtitle, $rows, $sanitizer) {
-        $out = '<div class="nab-frust-section">';
-        $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($title) . '</h3>';
-        $out .= '<p class="nab-frust-sub">' . $sanitizer->entities($subtitle) . '</p>';
-        if($rows) {
-            $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
-            $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Clicks</th></tr></thead><tbody>';
-            foreach(array_slice($rows, 0, 20) as $r) {
-                $out .= $this->clickRow($r, (int) $r['c'], $sanitizer);
-            }
-            $out .= '</tbody></table></div>';
-        } else {
-            $out .= '<p class="nab-frust-none">None detected.</p>';
-        }
-        $out .= '</div>';
-        return $out;
+            . '<td>' . $sanitizer->entities($row['type']) . '</td>'
+            . '<td class="nab-click-num">' . (int) $row['c'] . '</td></tr>';
     }
 
     /**
