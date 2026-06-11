@@ -910,6 +910,33 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * Search counts grouped by term for a path/device/date range, read from
+     * NativeAnalytics' pwna_hits (NA extracts the term from results-page URLs
+     * via its searchQueryVars setting — this module records nothing itself).
+     * Bot hits are excluded via pwna's own is_bot flag when the excludeNaBots
+     * setting is on (the nab_events-oriented botExclusionSql doesn't apply to
+     * pwna_hits). Returns rows ['label'=>term, 'c'=>count] descending by
+     * count; [] when the hits table is absent.
+     */
+    public function getSearchTermsForPath($path, $device, $fromDate, $toDate) {
+        if(!$this->hasHitsTable()) return [];
+        $db = $this->wire('database');
+        $botSql = empty($this->excludeNaBots) ? '' : " AND `is_bot`=0";
+        $sql = "SELECT `search_term` AS label, COUNT(*) AS c FROM `pwna_hits`
+            WHERE `path_hash`=:ph AND `search_term` <> '' AND `device_type`=:dev
+              AND `created_at` BETWEEN :from AND :to" . $botSql . "
+            GROUP BY `search_term` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate . ' 00:00:00',
+            ':to' => (string) $toDate . ' 23:59:59',
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
      * Scroll-depth distribution: count of pageviews reaching each 10% bucket.
      * Returns an 11-element array indexed 0..10 (0%,10%..100%).
      */
@@ -1424,6 +1451,34 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 'label' => (string) $r['label'],
                 'dead' => ((int) $r['dead']) ? 1 : 0,
                 'rage' => ((int) $r['rage']) ? 1 : 0,
+                't' => (string) $r['created_at'],
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * One session's site searches from pwna_hits (search_term is extracted by
+     * NativeAnalytics from results-page URLs), oldest first, keyed by the
+     * pwna path_hash of the results page so the journey endpoint can attach
+     * each search to its page. Returns [['path_hash','label','t'], ...]; []
+     * for a malformed hash or when the hits table is absent.
+     */
+    public function getSessionSearches($sessionHash) {
+        $sessionHash = (string) $sessionHash;
+        if(!preg_match('/^[a-f0-9]{64}$/', $sessionHash)) return [];
+        if(!$this->hasHitsTable()) return [];
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `path_hash`, `search_term`, `created_at` FROM `pwna_hits`
+            WHERE `session_hash`=:sh AND `search_term` <> ''
+            ORDER BY `created_at` ASC, `id` ASC
+            LIMIT 100");
+        $stmt->execute([':sh' => $sessionHash]);
+        $out = [];
+        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+            $out[] = [
+                'path_hash' => (string) $r['path_hash'],
+                'label' => (string) $r['search_term'],
                 't' => (string) $r['created_at'],
             ];
         }

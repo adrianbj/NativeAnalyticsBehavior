@@ -108,10 +108,42 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $this->sendJsonResponse(['error' => 'not found', 'pages' => []]);
         }
         $device = (string) $journey['device'];
+        // Site searches come from pwna_hits (recorded by NativeAnalytics),
+        // attached to their page by pwna path_hash and merged into the page's
+        // interactions in time order. A page specialized to a URL-segment
+        // variant carries a different hash and drops its searches rather than
+        // misattaching them; query-string search pages keep their canonical
+        // pathname, so the normal case always matches.
+        $searchesByPage = [];
+        foreach($this->core->getSessionSearches($session) as $s) {
+            $searchesByPage[$s['path_hash']][] = $s;
+        }
         foreach($journey['pages'] as &$p) {
             $rows = $this->core->getSessionInteractions($session, $p['path_hash'], $device, 200);
-            $p['interactions'] = $rows;
+            // "+N more" reflects only the capped nab interactions; searches
+            // are appended afterwards and counted into interaction_count.
             $p['more'] = max(0, (int) $p['interaction_count'] - count($rows));
+            $pageSearches = $searchesByPage[(string) $p['path_hash']] ?? [];
+            foreach($pageSearches as $s) {
+                $rows[] = [
+                    'type' => 'search',
+                    'x_frac' => 0,
+                    'y_px' => 0,
+                    'dh' => 0,
+                    'offx' => 500,
+                    'offy' => 500,
+                    'selector' => '',
+                    'label' => $s['label'],
+                    'dead' => 0,
+                    'rage' => 0,
+                    't' => $s['t'],
+                ];
+            }
+            if($pageSearches) {
+                usort($rows, function($a, $b) { return strcmp((string) $a['t'], (string) $b['t']); });
+                $p['interaction_count'] = (int) $p['interaction_count'] + count($pageSearches);
+            }
+            $p['interactions'] = $rows;
         }
         unset($p);
         $this->sendJsonResponse($journey);
@@ -230,6 +262,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $clicks = $this->core->getClickSelectorHeatmap($path, $device, $from, $to);
         $copies = $this->core->getCopySelectorHeatmap($path, $device, $from, $to);
+        $searches = $this->core->getSearchTermsForPath($path, $device, $from, $to);
         $scroll = $this->core->getScrollHeatmap($path, $device, $from, $to);
         $coords = $this->core->getClickCoordinates($path, $device, $from, $to);
         $deadClicks = $this->core->getDeadClicks($path, $device, $from, $to);
@@ -339,7 +372,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
         $out .= '<div class="pwna-panel">';
         $out .= '<h3 class="nab-frust-title">Top interactions</h3>';
-        $interactions = $this->buildInteractionRows($clicks, $copies, $deadClicks, $rageClicks);
+        $interactions = $this->buildInteractionRows($clicks, $copies, $searches, $deadClicks, $rageClicks);
         if($interactions) {
             $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
             $out .= '<thead><tr><th>Element</th><th>Type</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
@@ -387,14 +420,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
-     * Merge click and copy heatmap rows into one list for the unified
+     * Merge click, copy, and search rows into one list for the unified
      * "Top interactions" table. Dead/rage counts are folded into their click
      * rows by selector (frustration flags only exist on click events). Rows
      * sort by count descending; the list is capped at $cap rows, except rows
      * carrying a dead/rage badge, which are always kept so frustration
      * signals never drop out of view.
      */
-    protected function buildInteractionRows($clicks, $copies, $deadClicks, $rageClicks, $cap = 25) {
+    protected function buildInteractionRows($clicks, $copies, $searches, $deadClicks, $rageClicks, $cap = 25) {
         $dead = [];
         foreach($deadClicks as $r) $dead[(string) $r['selector']] = (int) $r['c'];
         $rage = [];
@@ -421,6 +454,16 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 'rage' => 0,
             ];
         }
+        foreach($searches as $r) {
+            $rows[] = [
+                'selector' => '',
+                'label' => (string) ($r['label'] ?? ''),
+                'c' => (int) $r['c'],
+                'type' => 'search',
+                'dead' => 0,
+                'rage' => 0,
+            ];
+        }
         usort($rows, function($a, $b) { return $b['c'] <=> $a['c']; });
         $kept = array_slice($rows, 0, $cap);
         foreach(array_slice($rows, $cap) as $r) {
@@ -430,7 +473,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
-     * One row of the unified interactions table: the readable label (falling
+     * One row of the unified interactions table (click, copy, or search): the readable label (falling
      * back to the raw selector) with inline dead/rage badge counts, the
      * interaction type, and the count. When a selector is known the row
      * carries it in data-nab-sel and is made focusable, so heatmap.js can
@@ -442,9 +485,15 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $badges = '';
         if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
         if($row['rage'] > 0) $badges .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
-        $cell = $label !== ''
-            ? '<span class="nab-click-label">' . $sanitizer->entities($label) . $badges . '</span>'
-            : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
+        if(($row['type'] ?? '') === 'search') {
+            // The searched term, quoted. No selector — searches aren't tied
+            // to an element, so the row gets no data-nab-sel below.
+            $cell = '<span class="nab-click-label">Search ("' . $sanitizer->entities($label) . '")</span>';
+        } else {
+            $cell = $label !== ''
+                ? '<span class="nab-click-label">' . $sanitizer->entities($label) . $badges . '</span>'
+                : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
+        }
         $attrs = $selector !== ''
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '" tabindex="0"'
             : '';
