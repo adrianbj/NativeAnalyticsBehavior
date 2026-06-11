@@ -430,8 +430,7 @@
       dom: node,
       path: path,
       device: deviceClass(),
-      capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
-      pageModified: cfg.pageModified || ""
+      capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0)
     });
     // Snapshots fire on load (page is alive) and are far larger than sendBeacon's
     // ~64KB cap; keepalive fetch carries the same cap, so use a plain fetch.
@@ -460,9 +459,28 @@
     uploadSnapshot(node);
   }
 
+  // Capture at most once per session per (path, device): the server versions a
+  // snapshot only when its DOM hash differs from the latest stored one, so one
+  // upload per session is enough to keep a current version on file while the rest
+  // dedup server-side. The sessionStorage gate avoids re-uploading a large DOM on
+  // every page view within the same session. deviceClass() is part of the key so a
+  // mid-session resize that crosses a breakpoint still captures the new layout.
+  function snapshotGateKey() {
+    return "nab_snap:" + deviceClass() + ":" + path;
+  }
+
+  function snapshotAlreadyCaptured() {
+    try { return sessionStorage.getItem(snapshotGateKey()) === "1"; } catch (e) { return false; }
+  }
+
+  function markSnapshotCaptured() {
+    try { sessionStorage.setItem(snapshotGateKey(), "1"); } catch (e) {}
+  }
+
   function maybeCaptureSnapshot() {
-    if (!cfg.snapshotEndpoint || !cfg.snapshotFresh) return;
-    if (cfg.snapshotFresh[deviceClass()] === true) return;
+    if (!cfg.snapshotEndpoint) return;
+    if (snapshotAlreadyCaptured()) return;
+    markSnapshotCaptured();
     if (window.rrwebSnapshot && window.rrwebSnapshot.snapshot) { doCapture(); return; }
     if (!cfg.snapshotLib) return;
     var s = document.createElement("script");

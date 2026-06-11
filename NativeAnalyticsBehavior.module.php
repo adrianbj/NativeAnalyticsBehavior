@@ -9,7 +9,6 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     const SNAPSHOT_TABLE = 'nab_snapshots';
     const SNAPSHOT_ROUTE = '/nab-snapshot';
     const SNAPSHOT_MAX_BYTES = 4194304; // 4 MB raw upload cap (DOM + inlined CSS)
-    const SNAPSHOT_BACKSTOP_DAYS = 30;  // re-capture if older than this regardless of edits
 
     protected $defaults = [
         'enabled' => 1,
@@ -164,52 +163,6 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return rtrim((string) $this->wire('config')->urls->root, '/') . self::SNAPSHOT_ROUTE . '/';
     }
 
-    /**
-     * Per-device freshness for the snapshot of a given path.
-     * Returns ['fresh' => ['desktop'=>bool,'tablet'=>bool,'mobile'=>bool], 'pageModified' => 'Y-m-d H:i:s'|null].
-     * A device is fresh when a stored snapshot exists, is not older than $page->modified, and is within the backstop window.
-     */
-    public function snapshotFreshnessForPath($path) {
-        $fresh = ['desktop' => false, 'tablet' => false, 'mobile' => false];
-        $page = $this->wire('page');
-        $pageModified = ($page && $page->id && $page->modified)
-            ? date('Y-m-d H:i:s', (int) $page->modified)
-            : null;
-        $cutoff = date('Y-m-d H:i:s', strtotime('-' . self::SNAPSHOT_BACKSTOP_DAYS . ' days'));
-        $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `device`,`captured_modified`,`captured_at`
-            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph");
-        $stmt->execute([':ph' => md5('/' . ltrim((string) $path, '/'))]);
-        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
-            $dev = (string) $row['device'];
-            if(!array_key_exists($dev, $fresh)) continue;
-            $ageOk = ((string) $row['captured_at']) >= $cutoff;
-            $modOk = ($pageModified === null)
-                || ($row['captured_modified'] !== null && ((string) $row['captured_modified']) >= $pageModified);
-            $fresh[$dev] = $ageOk && $modOk;
-        }
-        return ['fresh' => $fresh, 'pageModified' => $pageModified];
-    }
-
-    /**
-     * Server-trusted "page modified" timestamp for a captured path, used to gate
-     * snapshot overwrites without trusting the client. The /nab-snapshot endpoint
-     * is public, so the posted pageModified can't be believed: resolve the path to
-     * a real page and read its own modified time instead. URL-segment paths
-     * don't resolve via get(), so they return null (caller falls back to an
-     * age-only freshness check). Returns 'Y-m-d H:i:s' or null.
-     */
-    protected function pageModifiedForPath($path) {
-        $path = $this->normalizePath((string) $path);
-        try {
-            $p = $this->wire('pages')->get($path);
-        } catch(\Throwable $e) {
-            return null;
-        }
-        return ($p && $p->id && $p->modified) ? date('Y-m-d H:i:s', (int) $p->modified) : null;
-    }
-
-    // --- filled in by later tasks ---
     protected function ensureSchema($force = false) {
         static $done = false;
         if($done && !$force) return;
@@ -244,17 +197,24 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             KEY `session_hash` (`session_hash`),
             KEY `na_session_hash` (`na_session_hash`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // Versioned snapshots (D2): one row per DISTINCT DOM version of a
+        // (path, device), not one row per bucket. A version covers the time
+        // interval [captured_at, next version's captured_at); a session at time T
+        // selects the version with the greatest captured_at <= T. `dom_hash` is the
+        // sha256 of the stored DOM JSON, used at ingest to dedup an unchanged
+        // recapture against the latest version. No UNIQUE on (path_hash, device):
+        // multiple versions coexist.
         $db->exec("CREATE TABLE IF NOT EXISTS `" . self::SNAPSHOT_TABLE . "` (
             `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
             `path` VARCHAR(767) NOT NULL DEFAULT '',
             `path_hash` CHAR(32) NOT NULL DEFAULT '',
             `device` VARCHAR(16) NOT NULL DEFAULT '',
             `capture_width` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
-            `captured_modified` DATETIME NULL DEFAULT NULL,
+            `dom_hash` CHAR(64) NOT NULL DEFAULT '',
             `captured_at` DATETIME NOT NULL,
             `dom_gz` MEDIUMBLOB NOT NULL,
             PRIMARY KEY (`id`),
-            UNIQUE KEY `bucket` (`path_hash`, `device`),
+            KEY `ver` (`path_hash`, `device`, `captured_at`),
             KEY `captured_at` (`captured_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         // `label` was added after the events table shipped, so the CREATE above
@@ -295,7 +255,48 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD `na_session_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `session_hash`");
             $db->exec("ALTER TABLE `" . self::EVENTS_TABLE . "` ADD KEY `na_session_hash` (`na_session_hash`)");
         }
+        $this->migrateSnapshotVersioning($db);
         $done = true;
+    }
+
+    /**
+     * Migrate an existing nab_snapshots table to the versioned model (D2). The
+     * CREATE TABLE above is a no-op on installs that already have the single-row-
+     * per-bucket schema, so convert it idempotently here: add `dom_hash`, drop the
+     * `bucket` UNIQUE (so versions can coexist), drop the now-unused
+     * `captured_modified`, add the `ver` index, and backfill `dom_hash` for the
+     * pre-existing rows so the first recapture of an unchanged page dedups instead
+     * of inserting a spurious duplicate version.
+     */
+    protected function migrateSnapshotVersioning($db) {
+        $tbl = self::SNAPSHOT_TABLE;
+        $col = $db->query("SHOW COLUMNS FROM `$tbl` LIKE 'dom_hash'");
+        if($col && $col->rowCount() === 0) {
+            $db->exec("ALTER TABLE `$tbl` ADD `dom_hash` CHAR(64) NOT NULL DEFAULT '' AFTER `capture_width`");
+        }
+        $idx = $db->query("SHOW INDEX FROM `$tbl` WHERE Key_name='bucket'");
+        if($idx && $idx->rowCount() > 0) {
+            $db->exec("ALTER TABLE `$tbl` DROP INDEX `bucket`");
+        }
+        $idx = $db->query("SHOW INDEX FROM `$tbl` WHERE Key_name='ver'");
+        if($idx && $idx->rowCount() === 0) {
+            $db->exec("ALTER TABLE `$tbl` ADD KEY `ver` (`path_hash`, `device`, `captured_at`)");
+        }
+        // Backfill dom_hash over the same string ingest hashes (the gunzipped
+        // dom_gz IS that JSON), so an unchanged recapture matches the latest row.
+        $rows = $db->query("SELECT `id`,`dom_gz` FROM `$tbl` WHERE `dom_hash`=''");
+        if($rows) {
+            $upd = $db->prepare("UPDATE `$tbl` SET `dom_hash`=:h WHERE `id`=:id");
+            foreach($rows->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                $json = @gzdecode($r['dom_gz']);
+                if($json === false) continue;
+                $upd->execute([':h' => hash('sha256', $json), ':id' => (int) $r['id']]);
+            }
+        }
+        $col = $db->query("SHOW COLUMNS FROM `$tbl` LIKE 'captured_modified'");
+        if($col && $col->rowCount() > 0) {
+            $db->exec("ALTER TABLE `$tbl` DROP COLUMN `captured_modified`");
+        }
     }
     protected function shouldInjectCurrentRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) return false;
@@ -384,15 +385,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         // them would leave those pages with no heatmap backdrop at all; instead we
         // rely on the masking floor — maskAllInputs redacts every field value and
         // [data-na-mask]/[data-na-block] redact rendered PII regions.
-        // Match the client's window.location.pathname (full path incl. URL
-        // segments, site-root prefix) so the freshness check keys on the same
-        // path_hash that clicks and the stored snapshot will use.
-        $reqPath = '/' . ltrim((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH), '/');
-        $info = $this->snapshotFreshnessForPath($reqPath);
+        // The client captures once per session per path and always uploads; the
+        // ingest endpoint hash-dedups against the latest stored version, so there
+        // is no per-request freshness state to inject (D2 versioned snapshots).
         $payload['snapshotEndpoint'] = $this->getSnapshotEndpointUrl();
         $payload['snapshotLib'] = $this->getVersionedAssetUrl('assets/vendor/rrweb-snapshot.js');
-        $payload['snapshotFresh'] = $info['fresh'];
-        $payload['pageModified'] = $info['pageModified']; // string or null
 
         $jsonFlags = JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         $configJson = json_encode($payload, $jsonFlags);
@@ -643,59 +640,44 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $path = substr($path, 0, 767);
         $width = max(0, min(65535, (int) ($data['capture_width'] ?? 0)));
 
-        // The freshness marker can't be taken from the client: a forged future
-        // value would pin a spoofed snapshot as permanently "fresh". When the path
-        // resolves to a real page, use that page's modified time; otherwise (URL
-        // segment paths) accept the posted value but never a future one.
         $now = date('Y-m-d H:i:s');
-        $capturedModified = $this->pageModifiedForPath($path);
-        if($capturedModified === null) {
-            $pm = (string) ($data['pageModified'] ?? '');
-            if(preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $pm) && $pm <= $now) $capturedModified = $pm;
-        }
-
         $db = $this->wire('database');
         $pathHash = md5($path);
-
-        // Freshness gate: refuse to overwrite a snapshot that is still fresh. The
-        // endpoint is public, so without this any client could clobber a good
-        // snapshot with a forged DOM. "Fresh" matches snapshotFreshnessForPath():
-        // within the backstop window AND captured no older than the page's edit.
-        // A real refresh still happens once the page is edited (its modified
-        // advances past the stored marker) or the snapshot ages out.
-        $cutoff = date('Y-m-d H:i:s', strtotime('-' . self::SNAPSHOT_BACKSTOP_DAYS . ' days'));
-        $existing = $db->prepare("SELECT `captured_modified`,`captured_at`
-            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:device LIMIT 1");
-        $existing->execute([':ph' => $pathHash, ':device' => $device]);
-        if($row = $existing->fetch(\PDO::FETCH_ASSOC)) {
-            $ageOk = ((string) $row['captured_at']) >= $cutoff;
-            $modOk = ($capturedModified === null)
-                || ($row['captured_modified'] !== null && ((string) $row['captured_modified']) >= $capturedModified);
-            if($ageOk && $modOk) $this->sendJson(200, ['ok' => true, 'fresh' => true]);
-        }
 
         // JSON_HEX_TAG escapes < and > so the stored DOM can be safely embedded in a
         // <script type="application/json"> block on the admin dashboard; without it,
         // page text containing the literal "</script>" would break out of the tag.
         $domJson = json_encode($data['dom'], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
         if($domJson === false) $this->sendJson(400, ['ok' => false]);
+        $domHash = hash('sha256', $domJson);
+
+        // Version-on-change (D2): the client uploads once per session per path, but
+        // the markup only rarely differs between sessions, so store a new version
+        // only when this DOM differs from the LATEST stored version for the bucket.
+        // Comparing against the latest (not any historical version) is deliberate:
+        // an A -> B -> A oscillation correctly yields three intervals, each pointing
+        // at the markup live during its window. The endpoint is public, but a forged
+        // upload can now only append a new version dated "now" — it can't clobber the
+        // history older sessions resolve against.
+        $latest = $db->prepare("SELECT `dom_hash` FROM `" . self::SNAPSHOT_TABLE . "`
+            WHERE `path_hash`=:ph AND `device`=:device ORDER BY `captured_at` DESC, `id` DESC LIMIT 1");
+        $latest->execute([':ph' => $pathHash, ':device' => $device]);
+        if($row = $latest->fetch(\PDO::FETCH_ASSOC)) {
+            if(((string) $row['dom_hash']) === $domHash) $this->sendJson(200, ['ok' => true, 'unchanged' => true]);
+        }
+
         $gz = gzencode($domJson, 6);
         if($gz === false) $this->sendJson(500, ['ok' => false]);
 
         $sql = "INSERT INTO `" . self::SNAPSHOT_TABLE . "`
-            (`path`,`path_hash`,`device`,`capture_width`,`captured_modified`,`captured_at`,`dom_gz`)
-            VALUES (:path,:ph,:device,:w,:cm,:now,:dom)
-            ON DUPLICATE KEY UPDATE
-              `path`=VALUES(`path`), `capture_width`=VALUES(`capture_width`),
-              `captured_modified`=VALUES(`captured_modified`), `captured_at`=VALUES(`captured_at`),
-              `dom_gz`=VALUES(`dom_gz`)";
+            (`path`,`path_hash`,`device`,`capture_width`,`dom_hash`,`captured_at`,`dom_gz`)
+            VALUES (:path,:ph,:device,:w,:dh,:now,:dom)";
         $stmt = $db->prepare($sql);
         $stmt->bindValue(':path', $path);
         $stmt->bindValue(':ph', $pathHash);
         $stmt->bindValue(':device', $device);
         $stmt->bindValue(':w', $width, \PDO::PARAM_INT);
-        if($capturedModified === null) $stmt->bindValue(':cm', null, \PDO::PARAM_NULL);
-        else $stmt->bindValue(':cm', $capturedModified);
+        $stmt->bindValue(':dh', $domHash);
         $stmt->bindValue(':now', $now);
         $stmt->bindValue(':dom', $gz, \PDO::PARAM_LOB);
         $stmt->execute();
@@ -821,16 +803,41 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     /**
      * The stored DOM snapshot for a path/device, gunzipped.
      * Returns ['device'=>string, 'capture_width'=>int, 'captured_at'=>string, 'dom'=>string(JSON)] or null.
+     *
+     * Version selection (D2): with $atTime null (aggregate heatmap) the LATEST
+     * version is returned. With $atTime set ('Y-m-d H:i:s', a session's time on the
+     * page) the version live during that moment is returned — the greatest
+     * captured_at <= $atTime. A session predating the earliest stored version (e.g.
+     * its original markup aged out of retention) falls back to the earliest one, so
+     * the trail still shows the closest available backdrop rather than nothing.
      */
-    public function getSnapshot($path, $device) {
+    public function getSnapshot($path, $device, $atTime = null) {
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `device`,`capture_width`,`captured_at`,`dom_gz`
-            FROM `" . self::SNAPSHOT_TABLE . "` WHERE `path_hash`=:ph AND `device`=:dev LIMIT 1");
-        $stmt->execute([
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
-            ':dev' => (string) $device,
-        ]);
-        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        $pathHash = md5('/' . ltrim((string) $path, '/'));
+        $dev = (string) $device;
+        $tbl = self::SNAPSHOT_TABLE;
+        $cols = "`device`,`capture_width`,`captured_at`,`dom_gz`";
+        $row = null;
+        if($atTime !== null && $atTime !== '') {
+            $stmt = $db->prepare("SELECT $cols FROM `$tbl`
+                WHERE `path_hash`=:ph AND `device`=:dev AND `captured_at`<=:at
+                ORDER BY `captured_at` DESC, `id` DESC LIMIT 1");
+            $stmt->execute([':ph' => $pathHash, ':dev' => $dev, ':at' => (string) $atTime]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            if(!$row) {
+                $stmt = $db->prepare("SELECT $cols FROM `$tbl`
+                    WHERE `path_hash`=:ph AND `device`=:dev
+                    ORDER BY `captured_at` ASC, `id` ASC LIMIT 1");
+                $stmt->execute([':ph' => $pathHash, ':dev' => $dev]);
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            }
+        } else {
+            $stmt = $db->prepare("SELECT $cols FROM `$tbl`
+                WHERE `path_hash`=:ph AND `device`=:dev
+                ORDER BY `captured_at` DESC, `id` DESC LIMIT 1");
+            $stmt->execute([':ph' => $pathHash, ':dev' => $dev]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        }
         if(!$row) return null;
         $json = gzdecode($row['dom_gz']);
         if($json === false) return null;
@@ -1244,6 +1251,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                     'page_title' => (string) $r['page_title'],
                     'time_on_page' => (int) $r['time_on_page'],
                     'visit_count' => (int) $r['visit_count'],
+                    'first_at' => (string) $r['first_at'],
                     'interaction_count' => $counts[$ph] ?? 0,
                     'max_scroll' => $scroll[$ph] ?? 0,
                     'has_backdrop' => $this->snapshotExistsForHash($ph, $device),
@@ -1264,6 +1272,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                     'page_title' => (string) $r['page_title'],
                     'time_on_page' => $first ? (int) $r['time_on_page'] : 0,
                     'visit_count' => $first ? (int) $r['visit_count'] : 1,
+                    'first_at' => (string) $r['first_at'],
                     'interaction_count' => $counts[$vh] ?? 0,
                     'max_scroll' => $scroll[$vh] ?? 0,
                     'has_backdrop' => $this->snapshotExistsForHash($vh, $device),

@@ -383,7 +383,11 @@
       }
       hidePlaceholder();
       showSpinner(true);
-      fetch(cfg.snapshotUrl + "?path=" + encodeURIComponent(p.path) + "&device=" + encodeURIComponent(journey.device), { credentials: "same-origin" })
+      // Pass the time this session was on the page so the server returns the DOM
+      // version live during the session's window, not whatever was captured most
+      // recently (D2 versioned snapshots). Omit when unknown so it falls to latest.
+      var atParam = p.first_at ? "&at=" + encodeURIComponent(p.first_at) : "";
+      fetch(cfg.snapshotUrl + "?path=" + encodeURIComponent(p.path) + "&device=" + encodeURIComponent(journey.device) + atParam, { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
         .then(function (resp) {
           if (token !== loadToken) return;

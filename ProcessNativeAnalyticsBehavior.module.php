@@ -106,14 +106,18 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // AJAX: the stored masked backdrop for ?path + ?device, as JSON. `dom` is the
     // snapshot JSON as a string (the client JSON.parses it, mirroring how
     // heatmap.js reads the inline #nab-snapshot block). {none:true} when absent.
+    // ?at (a 'Y-m-d H:i:s' session-on-page time) selects the DOM version live at
+    // that moment; omitted, the latest version is returned (D2 versioned snapshots).
     public function ___executeSnapshot() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
         $path = $sanitizer->text($input->get('path'));
         $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile']) ?: 'desktop';
+        $at = (string) $input->get('at');
+        if(!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $at)) $at = null;
         if($path === '') $this->sendJsonResponse(['none' => true]);
-        $snap = $this->core->getSnapshot($path, $device);
+        $snap = $this->core->getSnapshot($path, $device, $at);
         if(!$snap) $this->sendJsonResponse(['none' => true]);
         $this->sendJsonResponse([
             'dom' => $snap['dom'],
