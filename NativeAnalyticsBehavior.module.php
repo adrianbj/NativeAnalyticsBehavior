@@ -1034,6 +1034,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $sql = "SELECT h.`session_hash` AS session_hash,
                        MIN(h.`created_at`) AS started_at,
                        MAX(h.`created_at`) AS last_at,
+                       SUM(h.`time_on_page`) AS duration,
                        MAX(h.`device_type`) AS device,
                        COUNT(DISTINCT h.`path_hash`) AS page_count,
                        COALESCE(e.`clicks`, 0) AS click_count,
@@ -1093,6 +1094,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 'session_hash' => (string) $r['session_hash'],
                 'started_at' => (string) $r['started_at'],
                 'last_at' => (string) $r['last_at'],
+                'duration' => (int) $r['duration'],
                 'device' => $dev,
                 'page_count' => (int) $r['page_count'],
                 'click_count' => (int) $r['click_count'],
@@ -1130,6 +1132,35 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             ':to' => (string) $to,
         ]);
         return (int) $stmt->fetchColumn();
+    }
+
+    /**
+     * Average engaged time per session, in whole seconds, over the sessions
+     * that qualify for getSessionsForPath() (same page-and-range filter and
+     * bot exclusion). Engaged time is the per-session sum of NativeAnalytics'
+     * per-hit time_on_page, so it includes time on the session's last page.
+     * Returns 0 when the hits table is absent, no sessions qualify, or no
+     * time was recorded.
+     */
+    public function getAvgSessionDurationForPath($path, $from, $to) {
+        if(!$this->hasHitsTable()) return 0;
+        $db = $this->wire('database');
+        $collate = $this->naHashCollation();
+        $stmt = $db->prepare("SELECT AVG(t.d) FROM (
+                SELECT SUM(h.`time_on_page`) AS d FROM `pwna_hits` h
+                WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
+                    SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                )
+                GROUP BY h.`session_hash`
+            ) t");
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':from' => (string) $from,
+            ':to' => (string) $to,
+        ]);
+        return (int) round((float) $stmt->fetchColumn());
     }
 
     /**
