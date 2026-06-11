@@ -432,19 +432,20 @@
       // no longer resolves.
       var doc = frameDoc();
       if (doc && it.selector) {
-        var el = NABStage.resolveSelector(doc, it.selector);
-        if (el) {
+        var el = resolveClickEl(doc, it);
+        // Only scroll to the element when its click point is in view; otherwise
+        // the pin is placed by the recorded coordinate (elClickInView is false),
+        // so scroll by those coordinates too and keep the highlighted pin centred.
+        if (el && elClickInView(el, it, null)) {
           var r = el.getBoundingClientRect();
-          if (r.width > 0 || r.height > 0) {
-            // Centre the recorded click POINT (where the pin sits, via offx/offy),
-            // not the element box: a container far wider/taller than the viewport
-            // would otherwise leave the actual click — and its pin — off-screen.
-            var fx = (typeof it.offx === "number" ? it.offx : 500) / 1000;
-            var fy = (typeof it.offy === "number" ? it.offy : 500) / 1000;
-            if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height * fy - frame.clientHeight / 2));
-            if (stage) stage.scrollLeft = Math.max(0, r.left + r.width * fx - stage.clientWidth / 2);
-            return;
-          }
+          // Centre the recorded click POINT (where the pin sits, via offx/offy),
+          // not the element box: a container far wider/taller than the viewport
+          // would otherwise leave the actual click — and its pin — off-screen.
+          var fx = (typeof it.offx === "number" ? it.offx : 500) / 1000;
+          var fy = (typeof it.offy === "number" ? it.offy : 500) / 1000;
+          if (win) win.scrollTo(0, Math.max(0, (win.pageYOffset || 0) + r.top + r.height * fy - frame.clientHeight / 2));
+          if (stage) stage.scrollLeft = Math.max(0, r.left + r.width * fx - stage.clientWidth / 2);
+          return;
         }
       }
       if (!it.dh) return;
@@ -567,9 +568,16 @@
       if (!it || !it.selector) return false;
       var doc = frameDoc();
       if (!doc) return false;
-      var el = NABStage.resolveSelector(doc, it.selector);
+      var el = resolveClickEl(doc, it);
       if (!el || !NABStage.isHidden(el)) return false;
       revealRestore = NABStage.reveal(el, frame.contentWindow);
+      // The reveal can surface a panel in the horizontally clipped overflow — e.g.
+      // a scriptless desktop navbar that never collapses to the captured mobile
+      // layout, leaving the clicked link past the frame's right edge. If the
+      // click point still falls outside the captured viewport width, the reveal
+      // can't bring it on screen, so undo it and let the caller place the pin by
+      // the recorded viewport-relative coordinate instead.
+      if (!elClickInView(el, it, null)) { clearReveal(); return false; }
       focusedWithin = withinIndex;
       focusedEl = el;
       // The reveal forces a closed panel (a fixed off-canvas bar) visible. Let
@@ -611,17 +619,66 @@
     // method can place it.
     function placePin(pin, it, g, doc) {
       if (doc && it.selector) {
-        var el = NABStage.resolveSelector(doc, it.selector);
-        if (el) {
-          var r = el.getBoundingClientRect();
-          if (r.width > 0 || r.height > 0) { placePinByEl(pin, el, it.offx, it.offy); return true; }
-        }
+        var el = resolveClickEl(doc, it);
+        if (el && elClickInView(el, it, g)) { placePinByEl(pin, el, it.offx, it.offy); return true; }
       }
       var pt = NABStage.point(g, it.x_frac, it.y_px, it.dh);
       if (!pt) return false;
       pin.style.left = pt.x + "px";
       pin.style.top = pt.y + "px";
       return true;
+    }
+
+    // True when the recorded click point on a resolved element lands inside the
+    // captured viewport width. The rebuilt layout can place an element in the
+    // horizontally clipped overflow region (snapshot content wider than the
+    // capture width); anchoring the pin there drops it in the empty gutter
+    // beside the frame, so callers fall back to the recorded viewport-relative
+    // coordinate instead. Only the horizontal axis is gated — vertical overflow
+    // is reachable by scrolling the iframe.
+    function elClickInView(el, it, g) {
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) return false;
+      var viewW = g ? g.viewW : frame.clientWidth;
+      if (!viewW) return true;
+      var fx = (typeof it.offx === "number" ? it.offx : 500) / 1000;
+      var px = r.left + r.width * fx;
+      return px >= 0 && px <= viewW;
+    }
+
+    // Resolve a recorded selector to the element that best represents the click.
+    // When the selector matches more than one node — typically a duplicate id
+    // such as a desktop nav button and its off-canvas twin — querySelector (and
+    // so NABStage.resolveSelector) returns the first in document order, which on
+    // a mobile-width capture is usually the desktop copy hidden by a `uk-visible@l`
+    // media query. pickClickTwin chooses the twin whose click point actually
+    // lands on-frame; only when none qualifies do we defer to resolveSelector's
+    // first-match-plus-ancestor-suffix behaviour.
+    function resolveClickEl(doc, it) {
+      if (!it || !it.selector) return null;
+      return pickClickTwin(doc, it) || NABStage.resolveSelector(doc, it.selector);
+    }
+
+    // Among multiple exact matches for it.selector, prefer one already rendered
+    // with its click point on-frame; failing that, a hidden one whose click point
+    // falls inside the captured viewport once revealed (probed by reveal-then-
+    // restore so the DOM is left untouched). Returns null when there is a single
+    // match or no candidate qualifies, so the caller can fall back.
+    function pickClickTwin(doc, it) {
+      var list;
+      try { list = doc.querySelectorAll(it.selector); } catch (e) { return null; }
+      if (!list || list.length < 2) return null;
+      for (var i = 0; i < list.length; i++) {
+        if (elClickInView(list[i], it, null)) return list[i];
+      }
+      for (var j = 0; j < list.length; j++) {
+        if (!NABStage.isHidden(list[j])) continue;
+        var restore = NABStage.reveal(list[j], frame.contentWindow);
+        var onFrame = elClickInView(list[j], it, null);
+        restore();
+        if (onFrame) return list[j];
+      }
+      return null;
     }
 
     // Position a pin over a resolved element, at the recorded click point within

@@ -63,7 +63,12 @@
     var sx = (win && win.pageXOffset) || (root && root.scrollLeft) || 0;
     var fr = frame.getBoundingClientRect();
     var or = overlay.getBoundingClientRect();
-    return { fullW: fullW, fullH: fullH, sx: sx, sy: sy, ox: fr.left - or.left, oy: fr.top - or.top };
+    // viewW is the capture-time viewport width (the frame is sized to it). x_frac
+    // is recorded as a fraction of that viewport, so horizontal placement maps
+    // against viewW, NOT the document scrollWidth (fullW) — otherwise clicks land
+    // past the frame whenever the rebuilt snapshot overflows horizontally.
+    var viewW = frame.clientWidth || fr.width || fullW;
+    return { fullW: fullW, fullH: fullH, viewW: viewW, sx: sx, sy: sy, ox: fr.left - or.left, oy: fr.top - or.top };
   }
 
   // Map one recorded click to an overlay pixel point using a geom() result.
@@ -73,7 +78,7 @@
   function point(g, xFrac, yPx, dh) {
     if (!g || !dh) return null;
     return {
-      x: (xFrac / 1000) * g.fullW - g.sx + g.ox,
+      x: (xFrac / 1000) * g.viewW + g.ox,
       y: (yPx / dh) * g.fullH - g.sy + g.oy
     };
   }
