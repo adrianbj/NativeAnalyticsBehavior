@@ -51,7 +51,7 @@
 .nab-rail-chip { display: inline-flex; align-items: center; gap: .4em; border: 1px solid #ddd; background: #fff; border-radius: 4px; padding: .25em .6em; cursor: pointer; font-size: .8em; max-width: 260px; }
 .nab-rail-chip:hover, .nab-rail-chip:focus { background: #f0f6f8; }
 .nab-rail-chip.is-active { border-color: #0C7896; box-shadow: inset 0 0 0 1px #0C7896; }
-.nab-rail-chip .nab-rail-n { display: inline-flex; align-items: center; justify-content: center; width: 1.4em; height: 1.4em; border-radius: 50%; background: #0C7896; color: #fff; font-size: .85em; }
+.nab-rail-chip .nab-rail-n { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 1.4em; height: 1.4em; border-radius: 50%; background: #0C7896; color: #fff; font-size: .85em; }
 .nab-rail-chip .nab-rail-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nab-rail-chip .nab-rail-count { color: #888; }
 
