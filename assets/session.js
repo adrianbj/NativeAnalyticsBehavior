@@ -117,6 +117,11 @@
       });
 
       selectEl = sel;
+      // The deep-linked journey may already be open (or in flight) from the
+      // startup maybeDeepLink, which ran before this select existed — sync it.
+      // currentUrlSession() only matches 64-hex hashes, so it's selector-safe.
+      var cur = currentUrlSession();
+      if (cur && sel.querySelector('option[value="' + cur + '"]')) sel.value = cur;
       listEl.innerHTML = "";
       var row = document.createElement("div");
       row.className = "nab-session-row";
@@ -866,6 +871,10 @@
     }
     function staleNote() {
       setUrlSession(null);
+      // A failed deep link hid the aggregate before fetching — bring it back.
+      // When a journey is already on screen (stale pick from the dropdown),
+      // leave that trail up instead.
+      if (!journey) showTrail(false);
       var note = document.createElement("p");
       note.className = "nab-frust-none nab-stale";
       note.textContent = "That session is no longer available.";
@@ -893,6 +902,14 @@
     }
 
     bindReposition();
+    // A deep-linked session replaces the aggregate view anyway: hide it before
+    // any fetch so it never flashes, and open the session in parallel with the
+    // list load instead of after it (renderList's own maybeDeepLink call then
+    // no-ops via deepLinkTried).
+    if (currentUrlSession()) {
+      showTrail(true);
+      maybeDeepLink();
+    }
     loadList();
   });
 })();
