@@ -133,10 +133,7 @@
       listEl.appendChild(row);
       var stats = [];
       var avg = fmtDuration(data && data.avg_duration);
-      if (avg) {
-        var n = typeof data.total === "number" && data.total > 0 ? data.total : sessions.length;
-        stats.push("Avg session length " + avg + " across " + n + " session" + (n === 1 ? "" : "s"));
-      }
+      if (avg) stats.push("Avg session length " + avg);
       if (data && data.scroll_avg > 0) stats.push(data.scroll_avg + "% avg scroll");
       if (data && data.scroll_max > 0) stats.push(data.scroll_max + "% max scroll");
       if (stats.length) {
