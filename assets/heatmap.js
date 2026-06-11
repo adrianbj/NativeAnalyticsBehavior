@@ -106,10 +106,10 @@
       ctx.restore();
     }
 
-    // Wire the server-rendered table rows (Most clicked / copied / frustration)
-    // so clicking one scrolls the backdrop to that element. Each row carries its
-    // recorded selector in data-nab-sel. Section-reach rows are wired separately
-    // in renderSectionTable (they hold a live element reference, not a selector).
+    // Wire the server-rendered "Top interactions" table rows so clicking one
+    // scrolls the backdrop to that element. Each row carries its recorded
+    // selector in data-nab-sel. Section-reach rows are wired separately in
+    // renderSectionTable (they hold a live element reference, not a selector).
     function bindTableLinks() {
       var rows = document.querySelectorAll("[data-nab-sel]");
       for (var i = 0; i < rows.length; i++) {

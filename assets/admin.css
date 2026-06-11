@@ -20,18 +20,13 @@
 /* The base table look (row borders, muted uppercase headers) comes from
    NativeAnalytics' .pwna-table; .nab-click-table only adds the column helpers. */
 .nab-click-table { margin: 0; }
-/* Stacked left-column tables (Most clicked / Most copied) sit flush otherwise;
-   space the second table's heading off the first table. */
-.pwna-table-wrap + .nab-frust-title { margin-top: 1.5em; }
 .nab-click-table .nab-click-label { display: block; }
 .nab-click-row { cursor: pointer; }
 .nab-click-row:hover, .nab-click-row:focus { background: #f0f6f8; outline: none; }
 .nab-click-table .nab-click-sel { display: block; word-break: break-all; font-size: .8em; color: #888; }
 .nab-click-table .nab-click-num { text-align: right; white-space: nowrap; width: 6em; }
 .nab-click-table .nab-sec-l2 { padding-left: 1.5em; }
-.nab-frust-section { margin: 0 0 1.5em; }
 .nab-frust-title { margin: 0 0 .1em; font-size: 1em; }
-.nab-frust-sub { margin: 0 0 .5em; font-size: .8em; color: #888; }
 .nab-frust-none { font-size: .85em; color: #888; }
 .nab-pathfind { position: relative; }
 .nab-pathfind-results { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 240px; max-width: 420px; max-height: 280px; overflow-y: auto; background: #fff; border: 1px solid #ccc; border-top: 0; border-radius: 0 0 4px 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); }

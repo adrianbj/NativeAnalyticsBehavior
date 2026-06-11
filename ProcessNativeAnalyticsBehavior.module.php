@@ -425,11 +425,12 @@ class ProcessNativeAnalyticsBehavior extends Process {
     protected function interactionRow($row, $sanitizer) {
         $label = trim((string) $row['label']);
         $selector = (string) $row['selector'];
+        $badges = '';
+        if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
+        if($row['rage'] > 0) $badges .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
         $cell = $label !== ''
-            ? '<span class="nab-click-label">' . $sanitizer->entities($label) . '</span>'
-            : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . '</code>';
-        if($row['dead'] > 0) $cell .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
-        if($row['rage'] > 0) $cell .= ' <span class="nab-row-sig is-rage">rage &times;' . (int) $row['rage'] . '</span>';
+            ? '<span class="nab-click-label">' . $sanitizer->entities($label) . $badges . '</span>'
+            : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
         $attrs = $selector !== ''
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '" tabindex="0"'
             : '';
