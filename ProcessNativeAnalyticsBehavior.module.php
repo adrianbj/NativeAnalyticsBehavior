@@ -77,11 +77,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $r['hash_short'] = $h !== '' ? substr($h, 0, 8) : '';
             $sessions[] = $r;
         }
+        $scrollStats = $this->core->getScrollStatsForPath($path, $from, $to);
         $this->sendJsonResponse([
             'sessions' => $sessions,
             'total' => $total,
             'showing' => count($sessions),
             'avg_duration' => $this->core->getAvgSessionDurationForPath($path, $from, $to),
+            'scroll_avg' => $scrollStats['avg'],
+            'scroll_max' => $scrollStats['max'],
         ]);
     }
 

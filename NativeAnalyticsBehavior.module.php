@@ -1166,6 +1166,30 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * Average and deepest scroll depth (percent) on a page within a date range,
+     * over the per-pageview scroll rows (one per session/page/device, holding
+     * the max scroll_pct that view reached). Device-independent, matching the
+     * sessions panel rather than the device-filtered heatmap. Returns
+     * ['avg' => int, 'max' => int], zeros when no scroll was recorded.
+     */
+    public function getScrollStatsForPath($path, $from, $to) {
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT AVG(`scroll_pct`), MAX(`scroll_pct`) FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='scroll' AND `path_hash`=:ph
+              AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql());
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':from' => (string) $from,
+            ':to' => (string) $to,
+        ]);
+        $row = $stmt->fetch(\PDO::FETCH_NUM);
+        return [
+            'avg' => (int) round((float) ($row[0] ?? 0)),
+            'max' => (int) ($row[1] ?? 0),
+        ];
+    }
+
+    /**
      * One session's cross-page journey, oldest page first, plus session-level
      * context from the entry (earliest) hit. Distinct pages are merged in
      * first-visit order: per-visit interaction attribution is impossible from
