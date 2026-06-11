@@ -160,7 +160,7 @@
       parts.push(pages + (pages === 1 ? " page" : " pages"));
       parts.push(clicks + (clicks === 1 ? " click" : " clicks"));
       if (copies > 0) parts.push(copies + (copies === 1 ? " copy" : " copies"));
-      if (scroll > 0) parts.push(scroll + "% max scroll");
+      if (scroll > 0) parts.push(scroll + "% scroll");
       var sig = [];
       if (s.has_rage) sig.push("rage");
       if (s.has_dead) sig.push("dead");
