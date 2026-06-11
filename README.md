@@ -1,18 +1,22 @@
 # NativeAnalyticsBehavior
 
-Behavioral analytics companion for the [NativeAnalytics](https://github.com/adrianbj/NativeAnalytics) ProcessWire module. It reuses NativeAnalytics' visitor/session identity and consent gating, but stores its own data and ships its own dashboard.
+Behavioral analytics companion for the [NativeAnalytics](https://github.com/adrianbj/NativeAnalytics) ProcessWire module. It reuses NativeAnalytics' visitor/session identity and consent gating, but stores its own data and ships its own dashboard under **Setup > Behavior**.
 
-## Phase 1 (this release): Heatmaps
-- Client collector captures click positions (no page text) and scroll depth.
-- Self-contained ingest endpoint at `/nab-collect`.
-- Click + scroll-depth heatmaps per page and device, in **Setup > Behavior**.
-- Configurable sampling rate, retention window, and path/template/role/IP exclusions (superusers are always excluded).
-- Daily retention purge via LazyCron.
-
-Planned later phases: behavior insights (rage/dead clicks, quick-backs, JS errors), then full session recordings (rrweb), then segments + funnels.
+## Features
+- **Heatmaps** — click and scroll-depth heatmaps per page and device. Clicks are anchored to the element that was clicked (selector + intra-element offset), so blobs stay put even when the rebuilt layout shifts.
+- **Frustration signals** — rage clicks (rapid repeated clicks in one spot), dead clicks (clicks on non-interactive elements), and copy events, each surfaced per element.
+- **Single-session trail viewer** — replay one visitor's cross-page journey over a rebuilt, masked snapshot of each page, with click/copy pins placed in time order and per-page scroll depth.
+- **Versioned page snapshots** — the collector captures a masked DOM snapshot (via rrweb-snapshot) once per session per page. The server stores a new version only when the markup actually changes (content-hash dedup), and the trail viewer shows the version that was live during each session's visit.
+- **Bot exclusion** — sessions NativeAnalytics flagged as bots can be hidden.
+- **Configurable** sampling rate, retention window, and path/template/role/IP exclusions (superusers are always excluded).
+- **Daily retention purge** via LazyCron.
 
 ## Privacy
-The collector stores **no page text**: click targets are recorded as CSS selectors only, and visitor/session IDs are stored as salted SHA-256 hashes. Use `NativeAnalyticsBehavior::eraseVisitor($rawId)` to satisfy data-subject erasure requests.
+The collector stores **no page text**: click targets are recorded as CSS selectors only, and visitor/session IDs are stored as salted SHA-256 hashes.
+
+Snapshots are masked at capture: all input values are masked, `[data-na-mask]` regions have their text redacted, and `[data-na-block]` regions are blocked entirely. Captured `<script>` elements are stripped, and the trail viewer rebuilds snapshots into a sandboxed iframe that runs no scripts.
+
+Use `NativeAnalyticsBehavior::eraseVisitor($rawId)` to satisfy data-subject erasure requests.
 
 ## Install
 1. Copy this folder to `/site/modules/NativeAnalyticsBehavior/`.
