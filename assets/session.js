@@ -451,7 +451,7 @@
         if (it.rage) sig = ' <span class="nab-row-sig is-rage">rage</span>';
         else if (it.dead) sig = ' <span class="nab-row-sig is-dead">dead</span>';
         var elCell = it.type === "search"
-          ? 'Searched for ("' + esc(it.label) + '")'
+          ? 'Searched for "' + esc(it.label) + '"'
           : esc(it.label || it.selector || it.type);
         tr.innerHTML =
           '<td><span class="nab-rail-path" title="' + esc(p.page_title || p.path) + '">' + esc(p.path) + '</span></td>' +
@@ -648,7 +648,7 @@
         var span = document.createElement("span");
         span.className = "nab-marker-text";
         span.textContent = it.type === "search"
-          ? 'Searched for ("' + (it.label || "") + '")'
+          ? 'Searched for "' + (it.label || "") + '"'
           : (it.label || it.selector || it.type);
         li.appendChild(span);
         list.appendChild(li);

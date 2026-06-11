@@ -508,7 +508,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             // initiated here (origin) vs landed here (results). No selector,
             // so the row gets no data-nab-sel below.
             $word = (($row['mode'] ?? 'origin') === 'results') ? 'Search results' : 'Searched for';
-            $cell = '<span class="nab-click-label">' . $word . ' ("' . $sanitizer->entities($label) . '")</span>';
+            $cell = '<span class="nab-click-label">' . $word . ' "' . $sanitizer->entities($label) . '"</span>';
         } else {
             $badges = '';
             if($row['dead'] > 0) $badges .= ' <span class="nab-row-sig is-dead">dead &times;' . (int) $row['dead'] . '</span>';
