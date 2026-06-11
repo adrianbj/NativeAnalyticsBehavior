@@ -758,7 +758,11 @@
         var ar = anchorEl.getBoundingClientRect();
         delta = Math.min(delta, ar.top - 12);
       }
-      if (delta > 0) window.scrollBy({ top: delta, behavior: "smooth" });
+      // Absolute scrollTo, not relative scrollBy: smooth scrollBy is applied
+      // against the PENDING scroll destination (notably in Chrome), so rapid
+      // successive row clicks stack their deltas and overshoot the anchor
+      // clamp. An absolute target replaces any in-flight animation instead.
+      if (delta > 0) window.scrollTo({ top: (window.pageYOffset || 0) + delta, behavior: "smooth" });
     }
 
     // Reposition existing pins without rebuilding (scroll/resize).
