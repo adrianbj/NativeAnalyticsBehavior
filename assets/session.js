@@ -345,9 +345,9 @@
           '<td>' + esc(it.label || it.selector || it.type) + sig + '</td>' +
           '<td>' + esc(it.type) + '</td>' +
           '<td class="nab-click-num">' + esc(fmtElapsed(firstTs, it.t)) + '</td>';
-        tr.addEventListener("click", function () { setStep(fi); });
+        tr.addEventListener("click", function () { setStep(fi); scrollStageIntoView(); });
         tr.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStep(fi); }
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setStep(fi); scrollStageIntoView(); }
         });
         tbody.appendChild(tr);
       });
@@ -737,8 +737,15 @@
         // in stage-scroll coords equals its iframe-relative left. Align it to the
         // stage's left edge — don't mix in the stage's own parent-page rect.
         stage.scrollLeft = Math.max(0, pr.left - 4);
-        if (stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
+        scrollStageIntoView();
       }
+    }
+
+    // Bring the trail stage into the admin viewport. The whole-session table
+    // can grow tall enough to push the stage off-screen, so stepping from a
+    // table row (or revealing a hidden panel) centres the stage in the window.
+    function scrollStageIntoView() {
+      if (stage && stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
     // Reposition existing pins without rebuilding (scroll/resize).
