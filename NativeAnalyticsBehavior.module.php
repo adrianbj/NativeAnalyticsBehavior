@@ -1206,14 +1206,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Aggregate stats for the sessions panel, over the sessions that qualify
      * for getSessionsForPath() (same page-and-range selection, bot exclusion,
      * and engagement $filters — see getSessionsForPath for the filter shape).
-     * Returns ['total','median_duration','scroll_avg','scroll_max'], all int:
+     * Returns ['total','median_duration','scroll_median','scroll_max'], all int:
      * - total: distinct qualifying sessions;
      * - median_duration: median per-session engaged time in whole seconds (the
      *   per-session sum of NativeAnalytics' per-hit time_on_page, so the last
      *   page counts). Unlike NativeAnalytics' own avg_time_on_page (which
      *   skips sessions whose time beacon never landed), zero-time sessions
      *   count toward this median unless a filter removes them;
-     * - scroll_avg / scroll_max: average and deepest scroll depth percent on
+     * - scroll_median / scroll_max: median and deepest scroll depth percent on
      *   THIS page in range, one value per filtered session — its deepest
      *   pageview on the page (sessions with no scroll row are skipped).
      *   Device-independent, matching the panel rather than the
@@ -1223,7 +1223,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * allows each named param only once per statement.
      */
     public function getSessionStatsForPath($path, $from, $to, $filters = []) {
-        $empty = ['total' => 0, 'median_duration' => 0, 'scroll_avg' => 0, 'scroll_max' => 0];
+        $empty = ['total' => 0, 'median_duration' => 0, 'scroll_median' => 0, 'scroll_max' => 0];
         if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
         $collate = $this->naHashCollation();
@@ -1301,16 +1301,25 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             $durations[] = (int) $r[0];
             if($r[1] !== null) $scrolls[] = (int) $r[1];
         }
-        sort($durations);
-        $n = count($durations);
-        $mid = intdiv($n, 2);
-        $median = ($n % 2) ? $durations[$mid] : ($durations[$mid - 1] + $durations[$mid]) / 2;
         return [
-            'total' => $n,
-            'median_duration' => (int) round($median),
-            'scroll_avg' => $scrolls ? (int) round(array_sum($scrolls) / count($scrolls)) : 0,
+            'total' => count($durations),
+            'median_duration' => $this->medianInt($durations),
+            'scroll_median' => $this->medianInt($scrolls),
             'scroll_max' => $scrolls ? max($scrolls) : 0,
         ];
+    }
+
+    /**
+     * Median of a list of ints, rounded to the nearest int (even-count lists
+     * average the two middle values). 0 for an empty list.
+     */
+    protected function medianInt(array $values) {
+        if(!$values) return 0;
+        sort($values);
+        $n = count($values);
+        $mid = intdiv($n, 2);
+        $median = ($n % 2) ? $values[$mid] : ($values[$mid - 1] + $values[$mid]) / 2;
+        return (int) round($median);
     }
 
     /**

@@ -235,7 +235,7 @@
       var stats = [];
       var median = fmtDuration(data && data.median_duration);
       if (median) stats.push("Median session length " + median);
-      if (data && data.scroll_avg > 0) stats.push(data.scroll_avg + "% avg scroll");
+      if (data && data.scroll_median > 0) stats.push(data.scroll_median + "% median scroll");
       if (data && data.scroll_max > 0) stats.push(data.scroll_max + "% max scroll");
       if (stats.length) {
         var avgNote = document.createElement("p");
