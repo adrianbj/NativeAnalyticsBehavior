@@ -369,7 +369,10 @@
 
     function renderMeta() {
       var parts = [];
-      if (journey.device) parts.push(esc(journey.device));
+      // ua_device is the visitor's actual device class (UA-based); journey.device
+      // is the viewport-based layout class used for interaction/snapshot lookups.
+      var dev = journey.ua_device || journey.device;
+      if (dev) parts.push(esc(dev));
       if (journey.browser) parts.push(esc(journey.browser));
       if (journey.os) parts.push(esc(journey.os));
       if (journey.landing) parts.push("landing " + esc(journey.landing));

@@ -536,10 +536,23 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $sql;
     }
 
+    /**
+     * Mirror the companion NativeAnalytics consent gate: when it requires consent
+     * and the consent cookie is absent, behavior data must not be stored either.
+     * Closes the direct-POST path; the client collector already gates on PWNA_CONFIG.
+     */
+    protected function consentBlocked() {
+        $data = $this->wire('modules')->getModuleConfigData('NativeAnalytics');
+        if(empty($data['requireConsent'])) return false;
+        $name = !empty($data['consentCookieName']) ? (string) $data['consentCookieName'] : 'pwna_consent';
+        return empty($_COOKIE[$name]);
+    }
+
     protected function handleCollectRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
         if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
         if(in_array($this->clientIp(), $this->configLines('blockedIps'), true)) $this->sendJson(204, ['ok' => true]);
+        if($this->consentBlocked()) $this->sendJson(204, ['ok' => true]);
 
         $raw = file_get_contents('php://input');
         if($raw === false || strlen($raw) > 262144) $this->sendJson(413, ['ok' => false]);
@@ -624,6 +637,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
         if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
         if(in_array($this->clientIp(), $this->configLines('blockedIps'), true)) $this->sendJson(204, ['ok' => true]);
+        if($this->consentBlocked()) $this->sendJson(204, ['ok' => true]);
 
         $raw = file_get_contents('php://input');
         if($raw === false || strlen($raw) > self::SNAPSHOT_MAX_BYTES) $this->sendJson(413, ['ok' => false]);
@@ -1299,7 +1313,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Returns null for a malformed hash, when NA's hits table is absent, or when
      * the session has no hits.
      *
-     * @return array{device:string,browser:string,os:string,landing:string,referrer_host:string,referrer_url:string,utm_source:string,utm_medium:string,utm_campaign:string,pages:array<int,array{path:string,path_hash:string,page_title:string,time_on_page:int,visit_count:int,interaction_count:int,max_scroll:int,has_backdrop:bool}>}|null
+     * 'device' is the layout class the session's clicks/copies were recorded
+     * under (viewport-based, majority across the session's events) — use it for
+     * interaction and snapshot lookups. 'ua_device' is NA's UA-based device_type,
+     * for display only; the two differ for e.g. a narrow desktop window.
+     *
+     * @return array{device:string,ua_device:string,browser:string,os:string,landing:string,referrer_host:string,referrer_url:string,utm_source:string,utm_medium:string,utm_campaign:string,pages:array<int,array{path:string,path_hash:string,page_title:string,time_on_page:int,visit_count:int,interaction_count:int,max_scroll:int,has_backdrop:bool}>}|null
      */
     public function getSessionJourney($sessionHash) {
         $sessionHash = (string) $sessionHash;
@@ -1315,8 +1334,25 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $ctxStmt->execute([':sh' => $sessionHash]);
         $ctx = $ctxStmt->fetch(\PDO::FETCH_ASSOC);
         if(!$ctx) return null;
-        $device = (string) $ctx['device_type'];
-        if(!in_array($device, ['desktop', 'tablet', 'mobile'], true)) $device = 'desktop';
+        $uaDevice = (string) $ctx['device_type'];
+        if(!in_array($uaDevice, ['desktop', 'tablet', 'mobile'], true)) $uaDevice = 'desktop';
+
+        // Layout device for fetching interactions and snapshots. nab_events rows
+        // carry the viewport-based class from collector.js deviceClass(), which can
+        // disagree with NA's UA-based device_type (a 810px-wide Mac Safari window
+        // records clicks as 'tablet'). Filtering interactions by the UA device would
+        // silently drop those rows, so use the class the session's clicks were
+        // actually recorded under (majority wins on mixed-width sessions).
+        $devStmt = $db->prepare("SELECT `device`
+            FROM `" . self::EVENTS_TABLE . "`
+            WHERE `na_session_hash`=:sh AND `type` IN ('click','copy')
+              AND `device` IN ('desktop','tablet','mobile')
+            GROUP BY `device`
+            ORDER BY COUNT(*) DESC, `device` ASC
+            LIMIT 1");
+        $devStmt->execute([':sh' => $sessionHash]);
+        $device = (string) $devStmt->fetchColumn();
+        if(!in_array($device, ['desktop', 'tablet', 'mobile'], true)) $device = $uaDevice;
 
         $pagesStmt = $db->prepare("SELECT `path`, `path_hash`,
                 MAX(`page_title`) AS page_title,
@@ -1436,6 +1472,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
         return [
             'device' => $device,
+            'ua_device' => $uaDevice,
             'browser' => (string) $ctx['browser'],
             'os' => (string) $ctx['os'],
             'landing' => (string) $ctx['landing'],
