@@ -88,7 +88,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'sessions' => $sessions,
             'total' => $stats['total'],
             'showing' => count($sessions),
-            'avg_duration' => $stats['avg_duration'],
+            'median_duration' => $stats['median_duration'],
             'scroll_avg' => $stats['scroll_avg'],
             'scroll_max' => $stats['scroll_max'],
         ]);
