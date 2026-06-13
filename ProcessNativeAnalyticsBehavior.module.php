@@ -75,6 +75,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'min_seconds' => ((int) $input->get('min_time')) === 1 ? 10 : 0,
             'interacted' => ((int) $input->get('interacted')) === 1,
             'min_scroll' => ((int) $input->get('min_scroll')) === 1 ? 25 : 0,
+            'multi_page' => ((int) $input->get('multi_page')) === 1,
         ];
         $rows = $this->core->getSessionsForPath($path, $from, $to, 50, $filters);
         $stats = $this->core->getSessionStatsForPath($path, $from, $to, $filters);
@@ -89,8 +90,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'total' => $stats['total'],
             'showing' => count($sessions),
             'median_duration' => $stats['median_duration'],
+            'median_pages' => $stats['median_pages'],
             'scroll_median' => $stats['scroll_median'],
-            'scroll_max' => $stats['scroll_max'],
         ]);
     }
 

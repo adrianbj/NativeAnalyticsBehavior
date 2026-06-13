@@ -39,7 +39,7 @@
     var revealRestore = null; // undoes any off-canvas reveal for the current step
     var focusedWithin = -1;   // interaction whose pin is element-anchored (or -1)
     var focusedEl = null;     // the resolved element that pin is anchored to
-    var listFilters = { min_time: false, interacted: false, min_scroll: false }; // engagement filter checkboxes
+    var listFilters = { min_time: false, interacted: false, min_scroll: false, multi_page: false }; // engagement filter checkboxes
     var listToken = 0;        // bumped per loadList; stale list fetches bail on mismatch
     var refocusFilter = null; // filter checkbox key to refocus after the list re-renders
     var filterSpinner = null; // spinner in the filter row while a re-fetch is in flight
@@ -85,7 +85,7 @@
     // ---- session list ----
 
     function filtersActive() {
-      return listFilters.min_time || listFilters.interacted || listFilters.min_scroll;
+      return listFilters.min_time || listFilters.interacted || listFilters.min_scroll || listFilters.multi_page;
     }
 
     // The "Show only sessions with:" checkbox row. State lives in listFilters
@@ -104,7 +104,8 @@
       [
         { key: "min_time", text: "10s+ duration" },
         { key: "interacted", text: "clicks/copies" },
-        { key: "min_scroll", text: "25%+ scroll" }
+        { key: "min_scroll", text: "25%+ scroll" },
+        { key: "multi_page", text: "more than 1 page" }
       ].forEach(function (f) {
         var lab = document.createElement("label");
         var cb = document.createElement("input");
@@ -150,7 +151,8 @@
         "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "") +
         (listFilters.min_time ? "&min_time=1" : "") +
         (listFilters.interacted ? "&interacted=1" : "") +
-        (listFilters.min_scroll ? "&min_scroll=1" : "");
+        (listFilters.min_scroll ? "&min_scroll=1" : "") +
+        (listFilters.multi_page ? "&multi_page=1" : "");
       fetch(url, { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
         .then(function (data) { if (token === listToken) renderList(data); })
@@ -233,10 +235,16 @@
       row.appendChild(selectSpinner);
       listEl.appendChild(row);
       var stats = [];
+      var medians = [];
       var median = fmtDuration(data && data.median_duration);
-      if (median) stats.push("Median session length " + median);
-      if (data && data.scroll_median > 0) stats.push(data.scroll_median + "% median scroll");
-      if (data && data.scroll_max > 0) stats.push(data.scroll_max + "% max scroll");
+      if (median) medians.push(median);
+      if (data && data.median_pages > 0) medians.push(data.median_pages + (data.median_pages === 1 ? " page" : " pages"));
+      if (data && data.scroll_median > 0) medians.push(data.scroll_median + "% scroll");
+      // One "Median" label fronts the whole median group.
+      if (medians.length) {
+        medians[0] = "Median " + medians[0];
+        stats = stats.concat(medians);
+      }
       if (stats.length) {
         var avgNote = document.createElement("p");
         avgNote.className = "nab-frust-none";

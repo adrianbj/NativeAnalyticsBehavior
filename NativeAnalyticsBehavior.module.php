@@ -1097,8 +1097,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * shipped qualify (older interactions carry an empty hash).
      *
      * $filters (['min_seconds' => int, 'interacted' => bool,
-     * 'min_scroll' => int]; 0/false disables a criterion) AND together as
-     * HAVING clauses over the per-session aggregates.
+     * 'min_scroll' => int, 'multi_page' => bool]; 0/false disables a criterion)
+     * AND together as HAVING clauses over the per-session aggregates.
      *
      * @return array<int,array{session_hash:string,started_at:string,last_at:string,duration:int,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int,referrer_host:string,utm_source:string,utm_medium:string,utm_campaign:string}>
      */
@@ -1123,6 +1123,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if(!empty($filters['min_scroll'])) {
             $having[] = "max_scroll >= :minscroll";
             $params[':minscroll'] = (int) $filters['min_scroll'];
+        }
+        if(!empty($filters['multi_page'])) {
+            $having[] = "page_count > 1";
         }
         $havingSql = $having ? "
                 HAVING " . implode(' AND ', $having) : '';
@@ -1206,24 +1209,24 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Aggregate stats for the sessions panel, over the sessions that qualify
      * for getSessionsForPath() (same page-and-range selection, bot exclusion,
      * and engagement $filters — see getSessionsForPath for the filter shape).
-     * Returns ['total','median_duration','scroll_median','scroll_max'], all int:
+     * Returns ['total','median_duration','median_pages','scroll_median'], all int:
      * - total: distinct qualifying sessions;
      * - median_duration: median per-session engaged time in whole seconds (the
      *   per-session sum of NativeAnalytics' per-hit time_on_page, so the last
      *   page counts). Unlike NativeAnalytics' own avg_time_on_page (which
      *   skips sessions whose time beacon never landed), zero-time sessions
      *   count toward this median unless a filter removes them;
-     * - scroll_median / scroll_max: median and deepest scroll depth percent on
-     *   THIS page in range, one value per filtered session — its deepest
-     *   pageview on the page (sessions with no scroll row are skipped).
-     *   Device-independent, matching the panel rather than the
-     *   device-filtered heatmap.
+     * - median_pages: median distinct-page count per qualifying session;
+     * - scroll_median: median scroll depth percent on THIS page in range, one
+     *   value per filtered session — its deepest pageview on the page (sessions
+     *   with no scroll row are skipped). Device-independent, matching the panel
+     *   rather than the device-filtered heatmap.
      * All zeros when the hits table is absent or nothing matches. The page
      * params appear twice under different names (:ph/:ph2 etc.) because PDO
      * allows each named param only once per statement.
      */
     public function getSessionStatsForPath($path, $from, $to, $filters = []) {
-        $empty = ['total' => 0, 'median_duration' => 0, 'scroll_median' => 0, 'scroll_max' => 0];
+        $empty = ['total' => 0, 'median_duration' => 0, 'median_pages' => 0, 'scroll_median' => 0];
         if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
         $collate = $this->naHashCollation();
@@ -1246,6 +1249,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if(!empty($filters['min_scroll'])) {
             $having[] = "session_scroll >= :minscroll";
             $params[':minscroll'] = (int) $filters['min_scroll'];
+        }
+        if(!empty($filters['multi_page'])) {
+            $having[] = "page_count > 1";
         }
         $havingSql = $having ? "
                     HAVING " . implode(' AND ', $having) : '';
@@ -1271,9 +1277,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ) e ON e.`na_session_hash`$collate = h.`session_hash`" : "";
         // Per-session rows rather than SQL aggregates: MySQL has no portable
         // MEDIAN(), so the duration median is computed in PHP below.
-        $sql = "SELECT t.`duration`, t.`page_scroll` FROM (
+        $sql = "SELECT t.`duration`, t.`page_scroll`, t.`page_count` FROM (
                 SELECT h.`session_hash` AS sh,
                        SUM(h.`time_on_page`) AS duration,$eventCols
+                       COUNT(DISTINCT h.`path_hash`) AS page_count,
                        MAX(ps.`page_scroll`) AS page_scroll
                 FROM `pwna_hits` h" . $eventJoin . "
                 LEFT JOIN (
@@ -1297,15 +1304,17 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if(!$rows) return $empty;
         $durations = [];
         $scrolls = [];
+        $pages = [];
         foreach($rows as $r) {
             $durations[] = (int) $r[0];
             if($r[1] !== null) $scrolls[] = (int) $r[1];
+            $pages[] = (int) $r[2];
         }
         return [
             'total' => count($durations),
             'median_duration' => $this->medianInt($durations),
+            'median_pages' => $this->medianInt($pages),
             'scroll_median' => $this->medianInt($scrolls),
-            'scroll_max' => $scrolls ? max($scrolls) : 0,
         ];
     }
 
