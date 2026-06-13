@@ -239,6 +239,10 @@
       var median = fmtDuration(data && data.median_duration);
       if (median) medians.push(median);
       if (data && data.median_pages > 0) medians.push(data.median_pages + (data.median_pages === 1 ? " page" : " pages"));
+      // Always show when there are sessions (0 is meaningful: the typical visitor
+      // didn't interact), unlike the other medians' >0 guard. Counts clicks +
+      // copies, so the label matches the "clicks/copies" filter.
+      if (data && data.total > 0) medians.push((data.median_clicks || 0) + " clicks/copies");
       if (data && data.scroll_median > 0) medians.push(data.scroll_median + "% scroll");
       // One "Median" label fronts the whole median group.
       if (medians.length) {

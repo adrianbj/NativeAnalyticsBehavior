@@ -92,6 +92,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'median_duration' => $stats['median_duration'],
             'median_pages' => $stats['median_pages'],
             'scroll_median' => $stats['scroll_median'],
+            'median_clicks' => $stats['median_clicks'],
         ]);
     }
 

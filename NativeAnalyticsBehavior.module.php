@@ -1209,7 +1209,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * Aggregate stats for the sessions panel, over the sessions that qualify
      * for getSessionsForPath() (same page-and-range selection, bot exclusion,
      * and engagement $filters — see getSessionsForPath for the filter shape).
-     * Returns ['total','median_duration','median_pages','scroll_median'], all int:
+     * Returns ['total','median_duration','median_pages','scroll_median','median_clicks'], all int:
      * - total: distinct qualifying sessions;
      * - median_duration: median per-session engaged time in whole seconds (the
      *   per-session sum of NativeAnalytics' per-hit time_on_page, so the last
@@ -1220,13 +1220,17 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * - scroll_median: median scroll depth percent on THIS page in range, one
      *   value per filtered session — its deepest pageview on the page (sessions
      *   with no scroll row are skipped). Device-independent, matching the panel
-     *   rather than the device-filtered heatmap.
+     *   rather than the device-filtered heatmap;
+     * - median_clicks: median interaction count (clicks + copies, matching the
+     *   'interacted' filter) on THIS page in range, one value per filtered
+     *   session (sessions with no interaction count as 0, since zero is
+     *   meaningful). Device-independent, like scroll_median.
      * All zeros when the hits table is absent or nothing matches. The page
      * params appear twice under different names (:ph/:ph2 etc.) because PDO
      * allows each named param only once per statement.
      */
     public function getSessionStatsForPath($path, $from, $to, $filters = []) {
-        $empty = ['total' => 0, 'median_duration' => 0, 'median_pages' => 0, 'scroll_median' => 0];
+        $empty = ['total' => 0, 'median_duration' => 0, 'median_pages' => 0, 'scroll_median' => 0, 'median_clicks' => 0];
         if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
         $collate = $this->naHashCollation();
@@ -1238,6 +1242,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $params[':ph2'] = $params[':ph'];
         $params[':from2'] = $params[':from'];
         $params[':to2'] = $params[':to'];
+        $params[':ph3'] = $params[':ph'];
+        $params[':from3'] = $params[':from'];
+        $params[':to3'] = $params[':to'];
         $having = [];
         if(!empty($filters['min_seconds'])) {
             $having[] = "duration >= :minsec";
@@ -1277,11 +1284,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ) e ON e.`na_session_hash`$collate = h.`session_hash`" : "";
         // Per-session rows rather than SQL aggregates: MySQL has no portable
         // MEDIAN(), so the duration median is computed in PHP below.
-        $sql = "SELECT t.`duration`, t.`page_scroll`, t.`page_count` FROM (
+        $sql = "SELECT t.`duration`, t.`page_scroll`, t.`page_count`, t.`page_clicks` FROM (
                 SELECT h.`session_hash` AS sh,
                        SUM(h.`time_on_page`) AS duration,$eventCols
                        COUNT(DISTINCT h.`path_hash`) AS page_count,
-                       MAX(ps.`page_scroll`) AS page_scroll
+                       MAX(ps.`page_scroll`) AS page_scroll,
+                       COALESCE(MAX(pc.`page_clicks`), 0) AS page_clicks
                 FROM `pwna_hits` h" . $eventJoin . "
                 LEFT JOIN (
                     SELECT `na_session_hash`, MAX(`scroll_pct`) AS page_scroll
@@ -1291,6 +1299,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                       AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
                     GROUP BY `na_session_hash`
                 ) ps ON ps.`na_session_hash`$collate = h.`session_hash`
+                LEFT JOIN (
+                    SELECT `na_session_hash`, COUNT(*) AS page_clicks
+                    FROM `" . self::EVENTS_TABLE . "`
+                    WHERE `type` IN ('click','copy') AND `path_hash`=:ph3
+                      AND `created_date` BETWEEN :from3 AND :to3
+                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                    GROUP BY `na_session_hash`
+                ) pc ON pc.`na_session_hash`$collate = h.`session_hash`
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
@@ -1305,16 +1321,19 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $durations = [];
         $scrolls = [];
         $pages = [];
+        $clicks = [];
         foreach($rows as $r) {
             $durations[] = (int) $r[0];
             if($r[1] !== null) $scrolls[] = (int) $r[1];
             $pages[] = (int) $r[2];
+            $clicks[] = (int) $r[3];
         }
         return [
             'total' => count($durations),
             'median_duration' => $this->medianInt($durations),
             'median_pages' => $this->medianInt($pages),
             'scroll_median' => $this->medianInt($scrolls),
+            'median_clicks' => $this->medianInt($clicks),
         ];
     }
 
