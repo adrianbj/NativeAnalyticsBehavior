@@ -249,7 +249,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $from = date('Y-m-d', strtotime('-' . ($rangeDays - 1) . ' days'));
         }
         // Device event counts drive both the dropdown labels and the fallback below.
-        $deviceCounts = $this->core->getDeviceEventCounts($path, $from, $to);
+        $deviceCounts = $this->core->getDeviceSessionCounts($path, $from, $to);
         // The device with the most events for this page — what we default to and
         // switch back to whenever the page changes.
         $bestDevice = ''; $bestCount = -1;

@@ -869,13 +869,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Total tracked events (clicks + scroll rows) per device for a path/range.
-     * Returns a device=>count map; devices with no events are absent.
+     * Distinct sessions per device for a path/range, over the same session
+     * universe as the sessions panel (events on this path+range that also
+     * exist in pwna_hits). Returns a device=>count map; devices with no
+     * sessions are absent. A session spanning two devices counts under each.
      */
-    public function getDeviceEventCounts($path, $fromDate, $toDate) {
+    public function getDeviceSessionCounts($path, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `device`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
+        $collate = $this->naHashCollation();
+        $hitsFilter = $this->hasHitsTable()
+            ? " AND `na_session_hash`$collate IN (SELECT `session_hash` FROM `pwna_hits` WHERE `session_hash` <> '')"
+            : '';
+        $stmt = $db->prepare("SELECT `device`, COUNT(DISTINCT `na_session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+              AND `na_session_hash` <> ''" . $this->botExclusionSql() . $hitsFilter . "
             GROUP BY `device`");
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
