@@ -149,6 +149,7 @@
       var token = ++listToken;
       var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "/") +
         "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "") +
+        (cfg.device ? "&device=" + encodeURIComponent(cfg.device) : "") +
         (listFilters.min_time ? "&min_time=1" : "") +
         (listFilters.interacted ? "&interacted=1" : "") +
         (listFilters.min_scroll ? "&min_scroll=1" : "") +
@@ -272,7 +273,8 @@
       var copies = s.copy_count || 0;
       var scroll = s.max_scroll || 0;
       var parts = [fmtWhen(s.started_at)];
-      if (s.device) parts.push(s.device);
+      if (cfg.device) parts.push(cfg.device);
+      else if (s.device) parts.push(s.device);
       var dur = fmtDuration(s.duration);
       if (dur) parts.push(dur);
       parts.push(pages + (pages === 1 ? " page" : " pages"));
