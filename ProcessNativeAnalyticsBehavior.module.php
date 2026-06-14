@@ -302,7 +302,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         // the chosen page on change (see pathsearch.js). The current page is marked
         // selected when it's in the list; otherwise the placeholder shows.
         $topOpts = '<option value="">Top pages by sessions…</option>';
-        foreach($this->core->getTopPagesBySessions(25) as $tp) {
+        foreach($this->core->getTopPagesBySessions(25, $from, $to) as $tp) {
             $tpPath = (string) $tp['path'];
             $topOpts .= '<option value="' . $sanitizer->entities($tpPath) . '"' . ($tpPath === $path ? ' selected' : '') . '>'
                 . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';

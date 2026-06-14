@@ -743,13 +743,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      *
      * @return array<int,array{path:string,c:int}>
      */
-    public function getTopPagesBySessions($limit = 25) {
+    public function getTopPagesBySessions($limit = 25, $from = null, $to = null) {
         $limit = max(1, min(100, (int) $limit));
         $db = $this->wire('database');
+        $params = [];
+        $dateSql = '';
+        if($from !== null && $to !== null) {
+            $dateSql = " AND `created_date` BETWEEN :from AND :to";
+            $params[':from'] = (string) $from;
+            $params[':to'] = (string) $to;
+        }
         $stmt = $db->prepare("SELECT `path`, COUNT(DISTINCT `session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `session_hash` <> ''" . $this->botExclusionSql() . "
+            WHERE `session_hash` <> ''" . $dateSql . $this->botExclusionSql() . "
             GROUP BY `path` ORDER BY c DESC LIMIT " . $limit);
-        $stmt->execute();
+        $stmt->execute($params);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
         $out = [];
         foreach($rows as $row) {
