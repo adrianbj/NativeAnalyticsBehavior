@@ -77,8 +77,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'min_scroll' => ((int) $input->get('min_scroll')) === 1 ? 25 : 0,
             'multi_page' => ((int) $input->get('multi_page')) === 1,
         ];
-        $rows = $this->core->getSessionsForPath($path, $from, $to, 50, $filters);
-        $stats = $this->core->getSessionStatsForPath($path, $from, $to, $filters);
+        $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile']) ?: '';
+        $rows = $this->core->getSessionsForPath($path, $from, $to, 50, $filters, $device);
+        $stats = $this->core->getSessionStatsForPath($path, $from, $to, $filters, $device);
         $sessions = [];
         foreach($rows as $r) {
             $h = (string) $r['session_hash'];
@@ -356,7 +357,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $msg = 'No data captured yet for <strong>' . $sanitizer->entities($path)
                 . '</strong> (' . $sanitizer->entities($device) . ').';
             return $out . $this->renderSessionSelector() . '<p>' . $msg . '</p>'
-                . $this->renderSessionTrail($path, $from, $to, $nonceAttr);
+                . $this->renderSessionTrail($path, $from, $to, $nonceAttr, $device);
         }
 
         $payload = json_encode([
@@ -436,7 +437,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $js = $this->core->getVersionedAssetUrl('assets/heatmap.js');
         $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($js) . '" defer></script>';
 
-        $out .= $this->renderSessionTrail($path, $from, $to, $nonceAttr);
+        $out .= $this->renderSessionTrail($path, $from, $to, $nonceAttr, $device);
 
         return $out;
     }
@@ -546,7 +547,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
      * deferred session.js. Rendered after the aggregate region so the trail sits
      * directly below the selector once the aggregate is hidden.
      */
-    protected function renderSessionTrail($path, $from, $to, $nonceAttr) {
+    protected function renderSessionTrail($path, $from, $to, $nonceAttr, $device = '') {
         $sanitizer = $this->wire('sanitizer');
         $procPage = $this->wire('pages')->get("template=admin, process=ProcessNativeAnalyticsBehavior, include=all");
         if(!$procPage || !$procPage->id) return '';
@@ -582,6 +583,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'path' => (string) $path,
             'from' => (string) $from,
             'to' => (string) $to,
+            'device' => (string) $device,
         ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         $out .= '<script type="application/json" id="nab-session-config">' . $cfg . '</script>';
 
