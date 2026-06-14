@@ -356,7 +356,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if(!$snapshot) {
             $msg = 'No data captured yet for <strong>' . $sanitizer->entities($path)
                 . '</strong> (' . $sanitizer->entities($device) . ').';
-            return $out . $this->renderSessionSelector() . '<p>' . $msg . '</p>'
+            return $out . $this->renderSessionSelector($device) . '<p>' . $msg . '</p>'
                 . $this->renderSessionTrail($path, $from, $to, $nonceAttr, $device);
         }
 
@@ -371,7 +371,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         foreach($clicks as $c) $clickTotal += (int) $c['c'];
         $scrollTotal = array_sum($scroll);
 
-        $out .= $this->renderSessionSelector();
+        $out .= $this->renderSessionSelector($device);
 
         // Everything from the aggregate meta through the heatmap stage is one
         // region; session.js hides #nab-aggregate wholesale on drill-down so the
@@ -533,10 +533,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
      * so it reads as a mode switch: picking a session swaps the whole aggregate
      * view (click/scroll tables + heatmap) for that session's trail.
      */
-    protected function renderSessionSelector() {
+    protected function renderSessionSelector($device = '') {
+        $dev = $device !== '' ? $this->wire('sanitizer')->entities($device) . ' ' : '';
         $out  = '<div class="pwna-panel nab-sessions" id="nab-sessions">';
-        $out .= '<h3 class="nab-frust-title">Sessions on this page</h3>';
-        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading sessions…</p></div>';
+        $out .= '<h3 class="nab-frust-title">' . ucfirst($dev . 'sessions on this page') . '</h3>';
+        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading ' . $dev . 'sessions…</p></div>';
         $out .= '</div>';
         return $out;
     }

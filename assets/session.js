@@ -88,6 +88,13 @@
       return listFilters.min_time || listFilters.interacted || listFilters.min_scroll || listFilters.multi_page;
     }
 
+    // The selected device as an adjective for "sessions" labels (e.g. "desktop "),
+    // so every count/label names the device the list is filtered to. Empty when
+    // no device is in play, leaving the plain "sessions" wording.
+    function devWord() {
+      return cfg.device ? cfg.device + " " : "";
+    }
+
     // The "Show only sessions with:" checkbox row. State lives in listFilters
     // so it survives re-renders; any change re-fetches the filtered list. The
     // row also renders when active filters empty the list, so they can be
@@ -99,7 +106,7 @@
       wrap.setAttribute("role", "group");
       wrap.setAttribute("aria-label", "Session engagement filters");
       var label = document.createElement("span");
-      label.textContent = "Show only sessions with:";
+      label.textContent = "Show only " + devWord() + "sessions with:";
       wrap.appendChild(label);
       [
         { key: "min_time", text: "10s+ duration" },
@@ -166,7 +173,7 @@
           if (fr) listEl.appendChild(fr);
           var err = document.createElement("p");
           err.className = "nab-frust-none";
-          err.textContent = "Could not load sessions.";
+          err.textContent = "Could not load " + devWord() + "sessions.";
           listEl.appendChild(err);
           restoreFilterFocus();
         });
@@ -181,8 +188,8 @@
         var none = document.createElement("p");
         none.className = "nab-frust-none";
         none.textContent = filtersActive()
-          ? "No sessions match the active filters."
-          : "No recorded sessions visited this page in range.";
+          ? "No " + devWord() + "sessions match the active filters."
+          : "No recorded " + devWord() + "sessions visited this page in range.";
         listEl.appendChild(none);
         restoreFilterFocus();
         maybeDeepLink();
@@ -192,7 +199,7 @@
       sel.className = "uk-select nab-session-select";
       var ph = document.createElement("option");
       ph.value = "";
-      ph.textContent = "All sessions (heatmap)";
+      ph.textContent = "All " + devWord() + "sessions (heatmap)";
       sel.appendChild(ph);
       sessions.forEach(function (s) {
         var opt = document.createElement("option");
@@ -260,8 +267,8 @@
       var note = document.createElement("p");
       note.className = "nab-frust-none";
       note.textContent = total > sessions.length
-        ? "Showing " + sessions.length + " of " + total + " sessions."
-        : total + " session" + (total === 1 ? "" : "s") + ".";
+        ? "Showing " + sessions.length + " of " + total + " " + devWord() + "sessions."
+        : total + " " + devWord() + "session" + (total === 1 ? "" : "s") + ".";
       listEl.appendChild(note);
       restoreFilterFocus();
       maybeDeepLink();
