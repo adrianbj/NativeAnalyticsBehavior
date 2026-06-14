@@ -743,13 +743,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      *
      * @return array<int,array{path:string,c:int}>
      */
-    public function getTopPagesBySessions($limit = 25) {
+    public function getTopPagesBySessions($limit = 25, $from = null, $to = null) {
         $limit = max(1, min(100, (int) $limit));
         $db = $this->wire('database');
+        $params = [];
+        $dateSql = '';
+        if($from !== null && $to !== null) {
+            $dateSql = " AND `created_date` BETWEEN :from AND :to";
+            $params[':from'] = (string) $from;
+            $params[':to'] = (string) $to;
+        }
         $stmt = $db->prepare("SELECT `path`, COUNT(DISTINCT `session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `session_hash` <> ''" . $this->botExclusionSql() . "
+            WHERE `session_hash` <> ''" . $dateSql . $this->botExclusionSql() . "
             GROUP BY `path` ORDER BY c DESC LIMIT " . $limit);
-        $stmt->execute();
+        $stmt->execute($params);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
         $out = [];
         foreach($rows as $row) {
@@ -862,13 +869,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Total tracked events (clicks + scroll rows) per device for a path/range.
-     * Returns a device=>count map; devices with no events are absent.
+     * Distinct sessions per device for a path/range, over the same session
+     * universe as the sessions panel (events on this path+range that also
+     * exist in pwna_hits). Returns a device=>count map; devices with no
+     * sessions are absent. A session spanning two devices counts under each.
      */
-    public function getDeviceEventCounts($path, $fromDate, $toDate) {
+    public function getDeviceSessionCounts($path, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $stmt = $db->prepare("SELECT `device`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
-            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to" . $this->botExclusionSql() . "
+        $collate = $this->naHashCollation();
+        $hitsFilter = $this->hasHitsTable()
+            ? " AND `na_session_hash`$collate IN (SELECT `session_hash` FROM `pwna_hits` WHERE `session_hash` <> '')"
+            : '';
+        $stmt = $db->prepare("SELECT `device`, COUNT(DISTINCT `na_session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+              AND `na_session_hash` <> ''" . $this->botExclusionSql() . $hitsFilter . "
             GROUP BY `device`");
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
@@ -1102,7 +1116,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      *
      * @return array<int,array{session_hash:string,started_at:string,last_at:string,duration:int,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int,referrer_host:string,utm_source:string,utm_medium:string,utm_campaign:string}>
      */
-    public function getSessionsForPath($path, $from, $to, $limit = 50, $filters = []) {
+    public function getSessionsForPath($path, $from, $to, $limit = 50, $filters = [], $device = '') {
         if(!$this->hasHitsTable()) return [];
         $db = $this->wire('database');
         $limit = max(1, min(200, (int) $limit));
@@ -1112,6 +1126,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             ':from' => (string) $from,
             ':to' => (string) $to,
         ];
+        $deviceSql = '';
+        if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
+            $deviceSql = " AND `device`=:dev";
+            $params[':dev'] = $device;
+        }
         $having = [];
         if(!empty($filters['min_seconds'])) {
             $having[] = "duration >= :minsec";
@@ -1173,7 +1192,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
-                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                      AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
                 )
                 GROUP BY h.`session_hash`" . $havingSql . "
                 ORDER BY last_at DESC
@@ -1229,7 +1248,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * params appear twice under different names (:ph/:ph2 etc.) because PDO
      * allows each named param only once per statement.
      */
-    public function getSessionStatsForPath($path, $from, $to, $filters = []) {
+    public function getSessionStatsForPath($path, $from, $to, $filters = [], $device = '') {
         $empty = ['total' => 0, 'median_duration' => 0, 'median_pages' => 0, 'scroll_median' => 0, 'median_clicks' => 0];
         if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
@@ -1245,6 +1264,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $params[':ph3'] = $params[':ph'];
         $params[':from3'] = $params[':from'];
         $params[':to3'] = $params[':to'];
+        $deviceSql = '';
+        if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
+            $deviceSql = " AND `device`=:dev";
+            $params[':dev'] = $device;
+        }
         $having = [];
         if(!empty($filters['min_seconds'])) {
             $having[] = "duration >= :minsec";
@@ -1310,7 +1334,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
                     WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
-                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+                      AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
                 )
                 GROUP BY h.`session_hash`" . $havingSql . "
             ) t";
