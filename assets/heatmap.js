@@ -50,21 +50,17 @@
     // before scrolling, so they're relative to the current iframe/stage viewport.
     function scrollToElement(el) {
       if (!el) return;
-      var r = el.getBoundingClientRect();
-      var win = frame.contentWindow;
-      if (win) {
-        var targetY = (win.pageYOffset || 0) + r.top + r.height / 2 - frame.clientHeight / 2;
-        win.scrollTo(0, Math.max(0, targetY));
-      }
       var stage = canvas.parentNode;
-      if (stage) {
-        var targetX = stage.scrollLeft + r.left + r.width / 2 - stage.clientWidth / 2;
-        stage.scrollLeft = Math.max(0, targetX);
-        // The element is now centred inside the iframe, but the stage itself may
-        // sit below the admin-page fold (the tables are above it). Scroll the
-        // outer page so the stage — and thus the centred element — is on screen.
-        if (stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      if (!stage) return;
+      var r = el.getBoundingClientRect();
+      // The stage is the scroll container and the iframe is full-height (no
+      // internal scroll), so r is in document coordinates. Centre the element in
+      // the stage's visible window on both axes.
+      stage.scrollLeft = Math.max(0, r.left + r.width / 2 - stage.clientWidth / 2);
+      stage.scrollTop = Math.max(0, r.top + r.height / 2 - stage.clientHeight / 2);
+      // The stage itself may sit below the admin-page fold (the tables are above
+      // it); scroll the outer page so the centred element is on screen.
+      if (stage.scrollIntoView) stage.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
     // Scroll an element into view and draw a highlight box around it. Used when an
@@ -197,8 +193,12 @@
     function drawHeat() {
       var doc = frameDoc();
       if (!doc) return;
+      var stage = canvas.parentNode;
       var w = frame.clientWidth;
-      var h = frame.clientHeight;
+      // The stage is the scroll container and the iframe is full-height, so the
+      // canvas covers only the visible band (stage viewport height), not the whole
+      // page — which also keeps it well under browser canvas-size limits.
+      var h = stage ? stage.clientHeight : frame.clientHeight;
       if (!w || !h) return;
 
       canvas.width = w;
@@ -210,6 +210,10 @@
       canvas.style.setProperty("max-width", "none", "important");
       canvas.style.setProperty("width", w + "px", "important");
       canvas.style.height = h + "px";
+      // The canvas is absolute inside the scrolling stage, so pin its top to the
+      // current scroll offset before measuring below — this makes oy resolve to
+      // -scrollTop, which the box/shade/line/density math already expects.
+      if (stage) canvas.style.top = stage.scrollTop + "px";
       var ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, w, h);
 
@@ -785,6 +789,20 @@
       fdoc.addEventListener("mouseout", redrawOnHover);
     }
 
+    // Size the iframe element to its content height so it never scrolls
+    // internally — the stage is the scroll container. Re-run as images load and
+    // shift the content height. Guarded so it no-ops when already correct, which
+    // keeps the ResizeObserver (which watches the frame) from looping.
+    function syncFrameHeight() {
+      var doc = frameDoc();
+      if (!doc) return;
+      var root = doc.documentElement, body = doc.body;
+      var fullH = Math.max(root ? root.scrollHeight : 0, body ? body.scrollHeight : 0);
+      if (fullH && Math.abs((parseInt(frame.style.height, 10) || 0) - fullH) > 1) {
+        frame.style.height = fullH + "px";
+      }
+    }
+
     function setup() {
       frame.style.width = captureWidth + "px";
       var doc = frameDoc();
@@ -796,15 +814,15 @@
       bindModeSwitch();
       bindTableLinks();
       setupHotspots();
-      setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
-      setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
-      setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);
+      setTimeout(function () { syncFrameHeight(); drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
+      setTimeout(function () { syncFrameHeight(); drawHeat(); buildSectionTable(); }, 400);
+      setTimeout(function () { syncFrameHeight(); drawHeat(); buildSectionTable(); }, 1200);
       // When embedded in a WireTab, the panel starts display:none, so the frame
       // has zero size at load and every early drawHeat bails. Redraw once the
       // tab is shown and the frame gains real dimensions. drawHeat no-ops on a
       // zero-size frame, so the initial 0->0 callbacks are harmless.
       if (typeof ResizeObserver === "function") {
-        new ResizeObserver(function () { drawHeat(); buildSectionTable(); }).observe(frame);
+        new ResizeObserver(function () { syncFrameHeight(); drawHeat(); buildSectionTable(); }).observe(frame);
       }
     }
 

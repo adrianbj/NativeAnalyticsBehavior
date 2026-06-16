@@ -9,8 +9,11 @@
 .nab-mode .nab-mode-btn[aria-pressed="true"],
 .nab-mode .nab-mode-btn[aria-pressed="true"]:hover,
 .nab-mode .nab-mode-btn[aria-pressed="true"]:focus { background: #0C7896 !important; color: #fff !important; border-color: #0C7896 !important; }
-.nab-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
-.nab-stage #nab-frame { height: 75vh; border: 0; display: block; background: #fff; }
+/* The stage is the single scroll container for the backdrop: heatmap.js sizes the
+   iframe to its full content height (so it never scrolls internally), and the
+   stage scrolls both axes with one set of scrollbars at the panel edge. */
+.nab-stage { position: relative; width: 100%; max-height: 75vh; border: 1px solid #ddd; overflow: auto; }
+.nab-stage #nab-frame { border: 0; display: block; background: #fff; }
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
 #nab-tip { position: fixed; z-index: 9999; pointer-events: none; max-width: 340px; padding: 3px 7px; border-radius: 3px; font-size: 12px; line-height: 1.35; color: #fff; background: rgba(33,48,59,.95); box-shadow: 0 2px 8px rgba(0,0,0,.3); overflow-wrap: anywhere; }
 #nab-tip[hidden] { display: none; }
@@ -68,7 +71,7 @@
 .nab-trail-spinner[hidden] { display: none; }
 .nab-trail-legend { font-size: .75em; color: #888; margin-left: .5em; }
 
-.nab-trail-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
+.nab-trail-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow-x: auto; overflow-y: hidden; }
 .nab-trail-stage #nab-trail-frame { height: 75vh; border: 0; display: block; background: #fff; }
 .nab-trail-markers { position: absolute; top: 0; left: 0; pointer-events: none; }
 .nab-trail-placeholder { padding: 1em; }
