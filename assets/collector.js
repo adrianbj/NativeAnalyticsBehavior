@@ -72,6 +72,15 @@
     // across the inner node and the wrapper.
     var clickable = el.closest ? el.closest("a, button") : null;
     if (clickable) return clickable;
+    // No interactive ancestor, but if a modestly-sized wrapper holds exactly one
+    // link/button (e.g. an inline <li> wrapping a single <a>, where the click
+    // landed on the " | " separator or whitespace beside the link), attribute the
+    // click to that control. Skips oversized wrappers so a click anywhere in a
+    // big section with one CTA isn't blamed on the CTA.
+    if (el.querySelectorAll && !isOversized(el)) {
+      var inner = el.querySelectorAll("a, button");
+      if (inner.length === 1) return inner[0];
+    }
     var label = el.closest ? el.closest("label") : null;
     if (label) {
       var control = null;
@@ -211,14 +220,17 @@
   // lists the wrapper's whole concatenated text as one "element", so drop it.
   // Small non-interactive targets are kept — a dead click on an icon or a line
   // of text is a genuine frustration signal; only oversized containers are noise.
-  function isContainerClick(el) {
-    if (!el || el.nodeType !== 1) return false;
-    if (el.closest && el.closest(INTERACTIVE_SEL)) return false;
+  function isOversized(el) {
     var vh = window.innerHeight || document.documentElement.clientHeight || 0;
     var vw = window.innerWidth || document.documentElement.clientWidth || 0;
     if (!vh || !vw) return false;
     var r = el.getBoundingClientRect();
     return r.height > vh || (r.width * r.height) > (vw * vh * 0.5);
+  }
+  function isContainerClick(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.closest && el.closest(INTERACTIVE_SEL)) return false;
+    return isOversized(el);
   }
 
   // Third-party widgets inject their own chrome into the page (e.g.
