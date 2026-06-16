@@ -237,12 +237,13 @@
       }
       renderLegend(maxC);
 
-      var unmatched = 0;
+      var unmatched = 0, overlay = 0;
       for (i = 0; i < clicks.length; i++) {
         var sel = clicks[i].selector;
         var count = parseInt(clicks[i].c, 10) || 0;
         var el = NABStage.resolveSelector(doc, sel);
         if (!el) { unmatched += count; continue; }
+        if (isFixedSelector(doc, sel)) { overlay += count; continue; }
         var r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0) continue;
         var x = r.left + ox;
@@ -261,9 +262,10 @@
 
       var status = document.getElementById("nab-unmatched");
       if (status) {
-        status.textContent = unmatched > 0
-          ? unmatched + " click(s) not matched to the current layout (element absent or restructured)."
-          : "";
+        var notes = [];
+        if (unmatched > 0) notes.push(unmatched + " click(s) not matched to the current layout (element absent or restructured).");
+        if (overlay > 0) notes.push(overlay + " click(s) on fixed overlays (e.g. cookie banner) shown in the table only.");
+        status.textContent = notes.join(" ");
       }
     }
 
@@ -371,6 +373,30 @@
       return selCache[sel];
     }
 
+    // A position:fixed element (e.g. a cookie-consent banner like PrivacyWire) is
+    // anchored to the viewport, not the page, so getBoundingClientRect stays
+    // constant under scroll: its outline can't be placed faithfully on the
+    // scrolling static backdrop — it orphans over unrelated content and never
+    // moves. Those clicks are real signal and stay in the interactions table, but
+    // the heatmap skips them. The climb up the ancestor chain matters: the click
+    // lands on a button/link in normal flow (position:static) inside the banner —
+    // only the banner *container* is fixed. Memoized: position is stable for a
+    // built-once snapshot. Sticky is kept — it tracks the page within its range.
+    var fixedCache = {};
+    function isFixedSelector(doc, sel) {
+      if (!sel) return false;
+      if (Object.prototype.hasOwnProperty.call(fixedCache, sel)) return fixedCache[sel];
+      var win = frame.contentWindow;
+      var node = resolveCached(doc, sel);
+      var root = doc.documentElement;
+      var fixed = false;
+      while (node && node !== root && win && win.getComputedStyle) {
+        if (win.getComputedStyle(node).position === "fixed") { fixed = true; break; }
+        node = node.parentElement;
+      }
+      return (fixedCache[sel] = fixed);
+    }
+
     function elementDocPoint(c, doc, win) {
       var sel = c[5];
       if (!sel) return null;
@@ -414,6 +440,7 @@
       // fallback so the offscreen overlap pattern (and thus the peak) is faithful.
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
+        if (doc && isFixedSelector(doc, c[5])) continue;
         dp = doc ? elementDocPoint(c, doc, win) : null;
         if (dp) {
           paintBlob(octx, dp.x * scale, dp.y * scale, radius);
@@ -448,6 +475,7 @@
       var i, c, dh, pt, dp;
       for (i = 0; i < coords.length; i++) {
         c = coords[i];
+        if (isFixedSelector(doc, c[5])) continue;
         // Prefer anchoring the blob to the clicked element (document-space point
         // converted to canvas space); fall back to the recorded page-fraction
         // coordinates when the selector no longer resolves.
