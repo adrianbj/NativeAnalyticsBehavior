@@ -259,7 +259,7 @@
         ctx.strokeStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")";
         ctx.lineWidth = 3;
         ctx.strokeRect(x + 1.5, y + 1.5, r.width - 3, r.height - 3);
-        boxes.push({ rx: r.left, ry: r.top, w: r.width, h: r.height, label: clicks[i].label || "", sel: sel, count: count });
+        boxes.push({ rx: r.left, ry: r.top, w: r.width, h: r.height, label: clicks[i].label || "", sel: sel, count: count, el: el });
       }
 
       drawScrollLines(ctx, w, h, oy);
@@ -714,6 +714,27 @@
       }
     }
 
+    // When the hovered element is a DOM ancestor of another clicked element, it's
+    // a container: clicks on it (e.g. in a field's margin gutter) are usually
+    // near-misses of the more specific element inside. DOM ancestry — not box
+    // geometry — is used so the margin model (a wrapper whose box is offset from,
+    // not nesting, its child) doesn't hide the relationship. Name the inner target
+    // when it drew more clicks (the likely intended hit); otherwise flag a plain
+    // container (a legit larger clickable region).
+    function enclosingFlag(b) {
+      if (!b.el) return "";
+      var inner = null;
+      for (var i = 0; i < boxes.length; i++) {
+        var c = boxes[i];
+        if (!c.el || c.el === b.el) continue;
+        if (b.el.contains(c.el)) {
+          if (!inner || c.count > inner.count) inner = c;
+        }
+      }
+      if (!inner) return "";
+      return inner.count > b.count ? " · near-miss of " + (inner.label || inner.sel) : " · container";
+    }
+
     // Hover tooltips that name the box under the cursor with its table label, so
     // a box on the backdrop can be tied back to its interactions-table row. The
     // canvas is pointer-events:none, so mouse events reach the iframe document
@@ -740,7 +761,7 @@
         }
         if (!best) { hide(); return; }
         var fr = frame.getBoundingClientRect();
-        tip.textContent = (best.label || best.sel) + " · " + best.count + (best.count === 1 ? " click" : " clicks");
+        tip.textContent = (best.label || best.sel) + " · " + best.count + (best.count === 1 ? " click" : " clicks") + enclosingFlag(best);
         tip.style.left = (fr.left + mx + 12) + "px";
         tip.style.top = (fr.top + my + 12) + "px";
         tip.hidden = false;
