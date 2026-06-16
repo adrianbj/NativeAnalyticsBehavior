@@ -748,6 +748,22 @@
         tip.hidden = false;
       });
       if (fdoc.documentElement) fdoc.documentElement.addEventListener("mouseleave", hide);
+
+      // The scriptless backdrop still applies CSS, so a :hover dropdown opens when
+      // the cursor enters a top-level menu item. Its items are zero-size (skipped
+      // by drawHeat) until shown, so redraw on hover enter/leave to outline them
+      // while the menu is open. Coalesced to one redraw per frame; skipped in
+      // density mode, where the per-frame repaint is too heavy for mouse moves.
+      var pending = false;
+      var redrawOnHover = function () {
+        if (pending || heatMode === "density" || canvas.style.display === "none") return;
+        pending = true;
+        var run = function () { pending = false; drawHeat(); };
+        if (window.requestAnimationFrame) window.requestAnimationFrame(run);
+        else window.setTimeout(run, 16);
+      };
+      fdoc.addEventListener("mouseover", redrawOnHover);
+      fdoc.addEventListener("mouseout", redrawOnHover);
     }
 
     function setup() {
