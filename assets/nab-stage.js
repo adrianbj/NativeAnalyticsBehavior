@@ -23,6 +23,32 @@
   // rebuilds via rrweb-snapshot, removes <noscript> (rendered visibly with
   // scripting off), and clips spurious horizontal overflow from the iframe
   // scrollbar. Caller is responsible for stripScripts() before calling.
+  // Lazy-loaded YouTube embeds keep their real src in a data attribute and let
+  // page JS assign the iframe src on load — but the backdrop runs no JS, so the
+  // iframe stays blank and the block renders empty. Overlay the video's poster
+  // thumbnail (a plain image, no scripts, no YouTube player) so the block shows
+  // the still. The iframe is left in place so any recorded click on it still
+  // resolves. Keyed on the data-youtube-id convention; the id is validated to
+  // YouTube's charset, so only an image URL can ever be built from it.
+  function fillLazyVideos(doc) {
+    var win = doc.defaultView;
+    var boxes = doc.querySelectorAll("[data-youtube-id]");
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      var id = box.getAttribute("data-youtube-id") || "";
+      if (!/^[A-Za-z0-9_-]{6,20}$/.test(id)) continue;
+      if (box.querySelector(".nab-yt-poster")) continue;
+      var cs = win && win.getComputedStyle ? win.getComputedStyle(box) : null;
+      if (cs && cs.position === "static") box.style.position = "relative";
+      var img = doc.createElement("img");
+      img.className = "nab-yt-poster";
+      img.alt = "";
+      img.src = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg";
+      img.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border:0;z-index:1;";
+      box.appendChild(img);
+    }
+  }
+
   function rebuild(doc, snap) {
     try {
       doc.open();
@@ -37,6 +63,7 @@
     for (var n = 0; n < noscripts.length; n++) {
       if (noscripts[n].parentNode) noscripts[n].parentNode.removeChild(noscripts[n]);
     }
+    fillLazyVideos(doc);
     var head = doc.head || doc.getElementsByTagName("head")[0];
     if (head) {
       var style = doc.createElement("style");
