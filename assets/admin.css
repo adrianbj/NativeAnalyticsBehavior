@@ -20,7 +20,7 @@
 /* The base table look (row borders, muted uppercase headers) comes from
    NativeAnalytics' .pwna-table; .nab-click-table only adds the column helpers. */
 .nab-click-table { margin: 0; }
-.nab-click-table .nab-click-label { display: block; }
+.nab-click-table .nab-click-label { display: block; overflow-wrap: anywhere; }
 .nab-click-row { cursor: pointer; }
 .nab-click-row:hover, .nab-click-row:focus { background: #f0f6f8; outline: none; }
 .nab-click-table .nab-click-sel { display: block; word-break: break-all; font-size: .8em; color: #888; }
