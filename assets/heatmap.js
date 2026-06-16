@@ -82,10 +82,10 @@
       if (revealRestore) { revealRestore(); revealRestore = null; }
     }
 
-    function focusSelector(sel) {
+    function focusSelector(sel, label) {
       var doc = frameDoc();
       if (!doc) return;
-      focusElement(NABStage.resolveSelector(doc, sel));
+      focusElement(NABStage.resolveSelector(doc, sel, label));
     }
 
     // Bright box around the currently focused element, drawn on top of the heat so
@@ -115,9 +115,10 @@
     function bindSelectorRow(row) {
       var sel = row.getAttribute("data-nab-sel");
       if (!sel) return;
-      row.addEventListener("click", function () { focusSelector(sel); });
+      var label = row.getAttribute("data-nab-label") || "";
+      row.addEventListener("click", function () { focusSelector(sel, label); });
       row.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusSelector(sel); }
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focusSelector(sel, label); }
       });
     }
 
@@ -249,7 +250,7 @@
       for (i = 0; i < clicks.length; i++) {
         var sel = clicks[i].selector;
         var count = parseInt(clicks[i].c, 10) || 0;
-        var el = NABStage.resolveSelector(doc, sel);
+        var el = resolveOutline(doc, sel, clicks[i].label);
         if (!el) { unmatched += count; continue; }
         if (isFixedSelector(doc, sel)) { overlay += count; continue; }
         var r = el.getBoundingClientRect();
@@ -380,6 +381,16 @@
       if (Object.prototype.hasOwnProperty.call(selCache, sel)) return selCache[sel];
       selCache[sel] = NABStage.resolveSelector(doc, sel) || null;
       return selCache[sel];
+    }
+
+    // Outline-mode resolution also passes the click's text label, so an element
+    // whose structural selector is ambiguous (footer links etc.) still resolves
+    // via its unique text. Memoized separately by selector (label is stable per
+    // selector) so the hover/scroll redraws don't repeat the text search.
+    var outlineCache = {};
+    function resolveOutline(doc, sel, label) {
+      if (Object.prototype.hasOwnProperty.call(outlineCache, sel)) return outlineCache[sel];
+      return (outlineCache[sel] = NABStage.resolveSelector(doc, sel, label) || null);
     }
 
     // A position:fixed element (e.g. a cookie-consent banner like PrivacyWire) is

@@ -117,20 +117,47 @@
   // pins exactly one element; an ambiguous suffix is left unmatched rather than
   // risk pointing at the wrong node. Shared by the aggregate heatmap and the
   // single-session trail so both resolve clicks the same way.
-  function resolveSelector(doc, sel) {
-    if (!sel) return null;
-    try {
-      var el = doc.querySelector(sel);
-      if (el) return el;
-    } catch (e) {}
-    var segs = sel.split(" > ");
-    for (var k = 1; k < segs.length; k++) {
-      var suffix = segs.slice(k).join(" > ");
-      var matches;
-      try { matches = doc.querySelectorAll(suffix); } catch (e) { matches = null; }
-      if (matches && matches.length === 1) return matches[0];
+  function resolveSelector(doc, sel, label) {
+    if (sel) {
+      try {
+        var el = doc.querySelector(sel);
+        if (el) return el;
+      } catch (e) {}
+      var segs = sel.split(" > ");
+      for (var k = 1; k < segs.length; k++) {
+        var suffix = segs.slice(k).join(" > ");
+        var matches;
+        try { matches = doc.querySelectorAll(suffix); } catch (e) { matches = null; }
+        if (matches && matches.length === 1) return matches[0];
+      }
     }
-    return null;
+    // Structural path was absent or ambiguous. If the click's text label was
+    // recorded, fall back to the one same-tag element whose visible text matches
+    // it: footer links etc. share structure (positional nth-child paths that
+    // don't survive small DOM drift) but have unique text.
+    return resolveByLabel(doc, sel, label);
+  }
+
+  // Find the single element of the selector's target tag whose collapsed visible
+  // text equals the recorded label. Returns null when the label is empty or the
+  // text isn't unique (don't guess). Tolerates the label's 100-char capture cap
+  // by matching a capped prefix.
+  function resolveByLabel(doc, sel, label) {
+    var norm = String(label || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!norm) return null;
+    var lastSeg = (sel || "").split(" > ").pop() || "";
+    var tag = (lastSeg.match(/^[a-z][a-z0-9]*/i) || ["*"])[0] || "*";
+    var nodes;
+    try { nodes = doc.querySelectorAll(tag); } catch (e) { return null; }
+    var found = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var t = (nodes[i].textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (t === norm || (norm.length >= 100 && t.indexOf(norm) === 0)) {
+        if (found) return null;
+        found = nodes[i];
+      }
+    }
+    return found;
   }
 
   // True when an element is present but renders no box (zero-size) — the signal

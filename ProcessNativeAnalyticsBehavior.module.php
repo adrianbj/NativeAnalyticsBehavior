@@ -520,8 +520,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 ? '<span class="nab-click-label">' . $sanitizer->entities($label) . $badges . '</span>'
                 : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
         }
+        $labelAttr = $label !== '' ? ' data-nab-label="' . $sanitizer->entities($label) . '"' : '';
         $attrs = $selector !== ''
-            ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '" tabindex="0"'
+            ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '"' . $labelAttr . ' tabindex="0"'
             : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
             . '<td>' . $sanitizer->entities($row['type']) . '</td>'
