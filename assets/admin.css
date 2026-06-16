@@ -12,6 +12,8 @@
 .nab-stage { position: relative; width: 100%; border: 1px solid #ddd; overflow: auto; }
 .nab-stage #nab-frame { height: 75vh; border: 0; display: block; background: #fff; }
 .nab-stage #nab-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+#nab-tip { position: fixed; z-index: 9999; pointer-events: none; max-width: 340px; padding: 3px 7px; border-radius: 3px; font-size: 12px; line-height: 1.35; color: #fff; background: rgba(33,48,59,.95); box-shadow: 0 2px 8px rgba(0,0,0,.3); overflow-wrap: anywhere; }
+#nab-tip[hidden] { display: none; }
 .nab-snapshot-meta { font-size: .85em; color: #555; margin: .5em 0; }
 .nab-snapshot-meta #nab-unmatched { color: #BC5620; }
 #nab-legend { display: inline-flex; align-items: center; gap: .4em; vertical-align: middle; }

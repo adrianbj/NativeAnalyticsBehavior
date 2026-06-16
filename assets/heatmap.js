@@ -35,6 +35,8 @@
     var focusEl = null;       // element currently flashed via a table-row click
     var focusTimer = null;
     var revealRestore = null; // undoes any off-canvas reveal done for the focus
+    var boxes = [];           // last-drawn outline boxes {rx,ry,w,h,label,sel,count} in iframe-viewport coords, for hover tooltips
+    var tip = null;           // floating label tooltip shown for the box under the cursor
 
     function rebuildInto(doc) {
       return NABStage.rebuild(doc, snap);
@@ -213,6 +215,10 @@
       var ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, w, h);
 
+      // Rebuilt every draw; drives the hover tooltips. Boxes are stored in
+      // iframe-viewport coordinates (the space mousemove on the iframe reports).
+      boxes.length = 0;
+
       var fr = frame.getBoundingClientRect();
       var cr = canvas.getBoundingClientRect();
       var ox = fr.left - cr.left;
@@ -255,6 +261,7 @@
         ctx.strokeStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")";
         ctx.lineWidth = 3;
         ctx.strokeRect(x + 1.5, y + 1.5, r.width - 3, r.height - 3);
+        boxes.push({ rx: r.left, ry: r.top, w: r.width, h: r.height, label: clicks[i].label || "", sel: sel, count: count });
       }
 
       drawScrollLines(ctx, w, h, oy);
@@ -684,6 +691,7 @@
       btn.addEventListener("click", function () {
         var on = canvas.style.display !== "none";
         canvas.style.display = on ? "none" : "";
+        if (on && tip) tip.hidden = true;
         btn.setAttribute("aria-pressed", on ? "false" : "true");
         btn.textContent = on ? "Show heatmap" : "Hide heatmap";
       });
@@ -708,6 +716,40 @@
       }
     }
 
+    // Hover tooltips that name the box under the cursor with its table label, so
+    // a box on the backdrop can be tied back to its interactions-table row. The
+    // canvas is pointer-events:none, so mouse events reach the iframe document
+    // underneath; listening there (allow-same-origin lets the parent attach the
+    // handler) keeps the backdrop scrollable. boxes[] is rebuilt every drawHeat in
+    // iframe-viewport coords, matching e.clientX/Y here; the smallest (innermost)
+    // box under the cursor wins so nested elements resolve to the most specific.
+    function setupHotspots() {
+      var fdoc = frameDoc();
+      if (!fdoc) return;
+      tip = document.createElement("div");
+      tip.id = "nab-tip";
+      tip.hidden = true;
+      document.body.appendChild(tip);
+      var hide = function () { if (tip) tip.hidden = true; };
+      fdoc.addEventListener("mousemove", function (e) {
+        if (canvas.style.display === "none") { hide(); return; }
+        var mx = e.clientX, my = e.clientY, best = null;
+        for (var i = 0; i < boxes.length; i++) {
+          var b = boxes[i];
+          if (mx >= b.rx && mx <= b.rx + b.w && my >= b.ry && my <= b.ry + b.h) {
+            if (!best || b.w * b.h < best.w * best.h) best = b;
+          }
+        }
+        if (!best) { hide(); return; }
+        var fr = frame.getBoundingClientRect();
+        tip.textContent = (best.label || best.sel) + " · " + best.count + (best.count === 1 ? " click" : " clicks");
+        tip.style.left = (fr.left + mx + 12) + "px";
+        tip.style.top = (fr.top + my + 12) + "px";
+        tip.hidden = false;
+      });
+      if (fdoc.documentElement) fdoc.documentElement.addEventListener("mouseleave", hide);
+    }
+
     function setup() {
       frame.style.width = captureWidth + "px";
       var doc = frameDoc();
@@ -718,6 +760,7 @@
       bindHeatToggle();
       bindModeSwitch();
       bindTableLinks();
+      setupHotspots();
       setTimeout(function () { drawHeat(); buildSectionTable(); bindFrameScroll(); }, 50);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 400);
       setTimeout(function () { drawHeat(); buildSectionTable(); }, 1200);
