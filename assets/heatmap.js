@@ -32,8 +32,7 @@
     var coords = data.coords || [];
     var captureWidth = parseInt(data.captureWidth, 10) || 1280;
     var heatMode = "outlines";
-    var focusEl = null;       // element currently flashed via a table-row click
-    var focusTimer = null;
+    var focusEl = null;       // element highlighted via a table-row click (until another row is clicked)
     var revealRestore = null; // undoes any off-canvas reveal done for the focus
     var boxes = [];           // last-drawn outline boxes {rx,ry,w,h,label,sel,count} in iframe-viewport coords, for hover tooltips
     var tip = null;           // floating label tooltip shown for the box under the cursor
@@ -68,9 +67,10 @@
       }
     }
 
-    // Scroll an element into view and flash a highlight box around it for a few
-    // seconds. Used when an admin clicks a row in any of the tables. The box is
-    // painted by drawHeat (so it tracks scroll); the timer clears it and redraws.
+    // Scroll an element into view and draw a highlight box around it. Used when an
+    // admin clicks a row in any of the tables. The box is painted by drawHeat (so
+    // it tracks scroll) and stays put until another row is focused, so the picked
+    // element stays marked while the admin reads around it.
     function focusElement(el) {
       if (!el) return;
       clearReveal();
@@ -80,8 +80,6 @@
       focusEl = el;
       scrollToElement(el);
       drawHeat();
-      if (focusTimer) clearTimeout(focusTimer);
-      focusTimer = setTimeout(function () { focusEl = null; clearReveal(); drawHeat(); }, 2500);
     }
 
     function clearReveal() {
