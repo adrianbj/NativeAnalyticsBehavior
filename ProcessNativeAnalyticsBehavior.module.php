@@ -552,52 +552,28 @@ class ProcessNativeAnalyticsBehavior extends Process {
             ];
         }
 
-        // A (selector,label) seen on >=2 distinct paths is site-wide (nav/footer).
-        $pathsByKey = [];
-        foreach($rows as $r) {
-            $key = $r['selector'] . "\0" . $r['label'];
-            $pathsByKey[$key][$r['path']] = true;
-        }
-
-        // Aggregate the site-wide elements (those on 2+ pages), summing counts
-        // across pages. Page-specific elements (on a single path) are not shown
-        // in the overview — drill into a page to see its own interactions.
-        $siteAgg = []; // key => merged row
-        foreach($rows as $r) {
-            $key = $r['selector'] . "\0" . $r['label'];
-            if(count($pathsByKey[$key]) < 2) continue;
-            if(!isset($siteAgg[$key])) {
-                $siteAgg[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
-                    'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
-            }
-            $siteAgg[$key]['c'] += $r['c'];
-            $siteAgg[$key]['dead'] += $r['dead'];
-            $siteAgg[$key]['rage'] += $r['rage'];
-        }
-
-        // Collapse rows that present identically (same visible label + type) but
-        // came from different selectors — e.g. a "FAQ" link in both the header and
-        // footer — into one summed row. Overview rows are inert, so the specific
-        // selector no longer matters for display.
+        // Aggregate every element across all pages by what it shows in the table
+        // (its visible label, or the raw selector when unlabeled) plus type, so the
+        // same element repeated across pages — header/footer links, a shared form
+        // field, anything — sums into a single row. Overview rows are inert, so the
+        // specific selector no longer matters for display.
         $display = [];
-        foreach($siteAgg as $r) {
+        foreach($rows as $r) {
             $shown = $r['label'] !== '' ? $r['label'] : $r['selector'];
             $key = $shown . "\0" . $r['type'];
             if(!isset($display[$key])) {
-                $display[$key] = $r;
-            } else {
-                $display[$key]['c'] += $r['c'];
-                $display[$key]['dead'] += $r['dead'];
-                $display[$key]['rage'] += $r['rage'];
+                $display[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
+                    'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
             }
+            $display[$key]['c'] += $r['c'];
+            $display[$key]['dead'] += $r['dead'];
+            $display[$key]['rage'] += $r['rage'];
         }
 
-        $out = '';
-
-        // Site-wide group, ranked by count desc.
-        $site = array_values($display);
-        usort($site, function($a, $b) { return $b['c'] <=> $a['c']; });
-        $out .= $this->renderInteractionGroup('Site-wide', 'Elements appearing on 2+ pages (nav, footer, shared components).', $site, $sanitizer);
+        // Ranked by count desc.
+        $items = array_values($display);
+        usort($items, function($a, $b) { return $b['c'] <=> $a['c']; });
+        $out = $this->renderInteractionGroup('Top interactions', 'Clicks and copies across all pages, combined.', $items, $sanitizer);
 
         if($out === '') $out = '<p class="nab-frust-none">No interactions recorded.</p>';
         return '<div class="nab-overview-interactions">' . $out . '</div>';
