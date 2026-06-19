@@ -357,16 +357,24 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $deviceOpts .= '<option value="' . $v . '"' . ($v === $device ? ' selected' : '') . '>' . $label . ' (' . $count . ')</option>';
         }
 
-        // Top-pages quick-jump: the 25 pages with the most sessions. JS navigates the form to
-        // the chosen page on change (see pathsearch.js). The current page is marked
-        // selected when it's in the list; otherwise the placeholder shows.
-        $topOpts = '<option value="">Top pages by sessions…</option>';
-        $topOpts .= '<option value="__all__">All pages (overview)</option>';
+        // Top-pages quick-jump: the 25 pages with the most sessions. JS navigates
+        // the form to the chosen page on change (see pathsearch.js). The current
+        // page is marked selected when it's in the list; when it isn't, it gets
+        // its own selected option below so the dropdown still reflects where you are.
+        $topOpts = '<option value="__all__">All pages (overview)</option>';
+        $pageOpts = '';
+        $inList = false;
         foreach($this->core->getTopPagesBySessions(25, $from, $to) as $tp) {
             $tpPath = (string) $tp['path'];
-            $topOpts .= '<option value="' . $sanitizer->entities($tpPath) . '"' . ($tpPath === $path ? ' selected' : '') . '>'
+            $sel = $tpPath === $path;
+            if($sel) $inList = true;
+            $pageOpts .= '<option value="' . $sanitizer->entities($tpPath) . '"' . ($sel ? ' selected' : '') . '>'
                 . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';
         }
+        if(!$inList && $path !== '') {
+            $topOpts .= '<option value="' . $sanitizer->entities($path) . '" selected>' . $sanitizer->entities($path) . '</option>';
+        }
+        $topOpts .= $pageOpts;
 
         // Toolbar mirrors the NativeAnalytics dashboard tabs: pwna-toolbar panel
         // with the quick-range/period control first, then From/To, then the
