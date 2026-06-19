@@ -560,14 +560,17 @@ class ProcessNativeAnalyticsBehavior extends Process {
     protected function renderOverviewInteractions($from, $to) {
         $sanitizer = $this->wire('sanitizer');
 
-        // Fold dead/rage counts onto their (path, selector) click rows.
+        // Dead clicks fold on as a raw event count per (path, selector).
         $dead = [];
         foreach($this->core->getDeadClicksAllPages($from, $to) as $r) {
             $dead[$r['path'] . "\0" . $r['selector']] = (int) $r['c'];
         }
-        $rage = [];
-        foreach($this->core->getRageClicksAllPages($from, $to) as $r) {
-            $rage[$r['path'] . "\0" . $r['selector']] = (int) $r['c'];
+        // Rage is counted per session: collect each selector's distinct rage
+        // sessions and union them per display label below, since summing per-page
+        // counts would double-count a session that raged on the element repeatedly.
+        $rageSessBySel = []; // selector => [na_session_hash => true]
+        foreach($this->core->getRageSessionsAllPages($from, $to) as $r) {
+            $rageSessBySel[(string) $r['selector']][(string) $r['sess']] = true;
         }
 
         // Build interactionRow-shaped rows tagged with their path.
@@ -577,14 +580,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $rows[] = [
                 'path' => (string) $r['path'], 'selector' => (string) $r['selector'],
                 'label' => (string) ($r['label'] ?? ''), 'c' => (int) $r['c'], 'type' => 'click',
-                'dead' => $dead[$k] ?? 0, 'rage' => $rage[$k] ?? 0,
+                'dead' => $dead[$k] ?? 0,
             ];
         }
         foreach($this->core->getCopySelectorHeatmapAllPages($from, $to) as $r) {
             $rows[] = [
                 'path' => (string) $r['path'], 'selector' => (string) $r['selector'],
                 'label' => (string) ($r['label'] ?? ''), 'c' => (int) $r['c'], 'type' => 'copy',
-                'dead' => 0, 'rage' => 0,
+                'dead' => 0,
             ];
         }
 
@@ -599,14 +602,18 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $shown = $r['label'] !== '' ? $r['label'] : $r['selector'];
             if(!isset($byType[$type][$shown])) {
                 $byType[$type][$shown] = ['selector' => $r['selector'], 'label' => $r['label'],
-                    'c' => 0, 'type' => $type, 'dead' => 0, 'rage' => 0, 'pages' => []];
+                    'c' => 0, 'type' => $type, 'dead' => 0, 'rage' => 0, 'pages' => [], 'rageSess' => []];
             }
             $byType[$type][$shown]['c'] += $r['c'];
             $byType[$type][$shown]['dead'] += $r['dead'];
-            $byType[$type][$shown]['rage'] += $r['rage'];
             // Per-page counts for the row tooltip; same path can arrive under
             // several selectors, so accumulate rather than overwrite.
             $byType[$type][$shown]['pages'][$r['path']] = ($byType[$type][$shown]['pages'][$r['path']] ?? 0) + $r['c'];
+            // Union this selector's rage sessions (clicks only) so the label's
+            // rage count is distinct sessions, not summed per-page counts.
+            if($type === 'click' && isset($rageSessBySel[$r['selector']])) {
+                $byType[$type][$shown]['rageSess'] += $rageSessBySel[$r['selector']];
+            }
         }
 
         $sortDesc = function($a, $b) { return $b['c'] <=> $a['c']; };
@@ -614,8 +621,12 @@ class ProcessNativeAnalyticsBehavior extends Process {
         usort($clicks, $sortDesc);
         $copies = array_values($byType['copy']);
         usort($copies, $sortDesc);
-        // Turn each row's page map into a hover tooltip listing where it happened.
-        foreach($clicks as &$r) $r['title'] = $this->pagesTooltip($r['pages']);
+        // Resolve the rage session set to a distinct-session count, and build the
+        // per-page hover tooltip from the page map.
+        foreach($clicks as &$r) {
+            $r['rage'] = count($r['rageSess']);
+            $r['title'] = $this->pagesTooltip($r['pages']);
+        }
         unset($r);
         foreach($copies as &$r) $r['title'] = $this->pagesTooltip($r['pages']);
         unset($r);
