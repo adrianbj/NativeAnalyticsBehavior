@@ -14,12 +14,15 @@
     for (var m = 0; m < jumps.length; m++) initJump(jumps[m]);
 
     function initJump(sel) {
-      sel.addEventListener("change", function () {
-        if (!sel.value) return;
+      sel.addEventListener("change", function (ev) {
+        var sel = ev.target;
         var form = sel.closest("form");
         if (!form) return;
         var pathInput = form.querySelector("[name=\"path\"]");
-        if (pathInput) pathInput.value = sel.value;
+        if (sel.value === "") return;            // placeholder, do nothing
+        if (pathInput) {
+          pathInput.value = (sel.value === "__all__") ? "" : sel.value;
+        }
         form.submit();
       });
     }
