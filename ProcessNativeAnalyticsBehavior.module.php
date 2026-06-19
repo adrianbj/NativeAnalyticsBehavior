@@ -66,7 +66,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
         $path = $sanitizer->text($input->get('path'));
-        if($path === '') $path = '/';
+        // Empty path => all-pages overview (getSessionsForPath drops the path filter).
+        // The 'all' flag lets a caller request all-pages explicitly even if a path leaks in.
+        if(((int) $input->get('all')) === 1) $path = '';
         $from = $sanitizer->date($input->get('from'), 'Y-m-d') ?: date('Y-m-d', strtotime('-29 days'));
         $to = $sanitizer->date($input->get('to'), 'Y-m-d') ?: date('Y-m-d');
         // Engagement filters: each ?param=1 activates one criterion; active
@@ -78,6 +80,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'multi_page' => ((int) $input->get('multi_page')) === 1,
         ];
         $device = $sanitizer->option($input->get('device'), ['desktop', 'tablet', 'mobile']) ?: '';
+        if($path === '') $device = '';
         $rows = $this->core->getSessionsForPath($path, $from, $to, 50, $filters, $device);
         $stats = $this->core->getSessionStatsForPath($path, $from, $to, $filters, $device);
         $sessions = [];
@@ -616,7 +619,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     protected function renderOverviewSessions($from, $to, $nonceAttr) {
-        return '<p>sessions placeholder</p>';
+        return $this->renderSessionSelector('', true)
+            . $this->renderSessionTrail('', $from, $to, $nonceAttr, '');
     }
 
     /**
@@ -711,11 +715,12 @@ class ProcessNativeAnalyticsBehavior extends Process {
      * so it reads as a mode switch: picking a session swaps the whole aggregate
      * view (click/scroll tables + heatmap) for that session's trail.
      */
-    protected function renderSessionSelector($device = '') {
+    protected function renderSessionSelector($device = '', $allPages = false) {
         $dev = $device !== '' ? $this->wire('sanitizer')->entities($device) . ' ' : '';
+        $title = $allPages ? 'All sessions in range' : ucfirst($dev . 'sessions on this page');
         $out  = '<div class="pwna-panel nab-sessions" id="nab-sessions">';
-        $out .= '<h3 class="nab-frust-title">' . ucfirst($dev . 'sessions on this page') . '</h3>';
-        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading ' . $dev . 'sessions…</p></div>';
+        $out .= '<h3 class="nab-frust-title">' . $title . '</h3>';
+        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading sessions…</p></div>';
         $out .= '</div>';
         return $out;
     }
