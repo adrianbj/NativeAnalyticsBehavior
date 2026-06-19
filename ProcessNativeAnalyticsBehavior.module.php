@@ -486,8 +486,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
      */
     protected function renderOverview($from, $to, $rangeOptsHtml, $fromInput, $toInput, $nonceAttr) {
         $sanitizer = $this->wire('sanitizer');
-        $topOpts  = '<option value="">Top pages by sessions…</option>';
-        $topOpts .= '<option value="__all__" selected>All pages (overview)</option>';
+        // No "choose a page" placeholder here — the overview's own option is the
+        // selected default, so a placeholder above it would just be an inert row.
+        $topOpts  = '<option value="__all__" selected>All pages (overview)</option>';
         foreach($this->core->getTopPagesBySessions(25, $from, $to) as $tp) {
             $tpPath = (string) $tp['path'];
             $topOpts .= '<option value="' . $sanitizer->entities($tpPath) . '">'
