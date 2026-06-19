@@ -516,6 +516,27 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
+     * A row-hover tooltip listing the pages an aggregated interaction happened
+     * on, "path (count)" per line, busiest first. Capped so a site-wide element
+     * (nav/footer) doesn't produce an enormous tooltip. Plain text — the caller
+     * escapes it for the title attribute.
+     */
+    protected function pagesTooltip(array $pageCounts) {
+        arsort($pageCounts);
+        $total = count($pageCounts);
+        $cap = 15;
+        $lines = [];
+        foreach($pageCounts as $path => $c) {
+            if(count($lines) >= $cap) {
+                $lines[] = '…and ' . ($total - $cap) . ' more';
+                break;
+            }
+            $lines[] = $path . ' (' . (int) $c . ')';
+        }
+        return implode("\n", $lines);
+    }
+
+    /**
      * One titled interactions group (a table) for the overview. $rows are in the
      * interactionRow() shape. $heading is plain text (e.g. "Clicks", "Copies").
      */
@@ -577,11 +598,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $shown = $r['label'] !== '' ? $r['label'] : $r['selector'];
             if(!isset($byType[$type][$shown])) {
                 $byType[$type][$shown] = ['selector' => $r['selector'], 'label' => $r['label'],
-                    'c' => 0, 'type' => $type, 'dead' => 0, 'rage' => 0];
+                    'c' => 0, 'type' => $type, 'dead' => 0, 'rage' => 0, 'pages' => []];
             }
             $byType[$type][$shown]['c'] += $r['c'];
             $byType[$type][$shown]['dead'] += $r['dead'];
             $byType[$type][$shown]['rage'] += $r['rage'];
+            // Per-page counts for the row tooltip; same path can arrive under
+            // several selectors, so accumulate rather than overwrite.
+            $byType[$type][$shown]['pages'][$r['path']] = ($byType[$type][$shown]['pages'][$r['path']] ?? 0) + $r['c'];
         }
 
         $sortDesc = function($a, $b) { return $b['c'] <=> $a['c']; };
@@ -589,6 +613,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         usort($clicks, $sortDesc);
         $copies = array_values($byType['copy']);
         usort($copies, $sortDesc);
+        // Turn each row's page map into a hover tooltip listing where it happened.
+        foreach($clicks as &$r) $r['title'] = $this->pagesTooltip($r['pages']);
+        unset($r);
+        foreach($copies as &$r) $r['title'] = $this->pagesTooltip($r['pages']);
+        unset($r);
 
         // Each group renders only when it has rows, so an absent table (e.g. no
         // copies in range) simply doesn't appear.
@@ -689,6 +718,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $attrs = ($interactive && $selector !== '')
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '"' . $labelAttr . ' tabindex="0"'
             : '';
+        // Optional hover tooltip (e.g. the overview's per-page breakdown).
+        $title = trim((string) ($row['title'] ?? ''));
+        if($title !== '') $attrs .= ' title="' . $sanitizer->entities($title) . '"';
         $typeCell = $showType ? '<td>' . $sanitizer->entities($row['type']) . '</td>' : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
             . $typeCell
