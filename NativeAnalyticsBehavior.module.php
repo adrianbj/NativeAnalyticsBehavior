@@ -995,27 +995,6 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Site-wide search-term counts (all pages, all devices) from pwna_hits, for
-     * the all-pages overview. Mirrors getSearchTermsForPath without the
-     * path_hash/device filters. Rows ['label'=>term,'c'=>count] desc; [] when
-     * the hits table is absent.
-     */
-    public function getSearchTermsAllPages($fromDate, $toDate) {
-        if(!$this->hasHitsTable()) return [];
-        $db = $this->wire('database');
-        $botSql = empty($this->excludeNaBots) ? '' : " AND `is_bot`=0";
-        $sql = "SELECT `search_term` AS label, COUNT(*) AS c FROM `pwna_hits`
-            WHERE `search_term` <> '' AND `created_at` BETWEEN :from AND :to" . $botSql . "
-            GROUP BY `search_term` ORDER BY c DESC";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([
-            ':from' => (string) $fromDate . ' 00:00:00',
-            ':to' => (string) $toDate . ' 23:59:59',
-        ]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
-    }
-
-    /**
      * Search counts grouped by term for searches INITIATED on a page — the
      * visitor's immediately preceding pageview in the same pwna session —
      * within a device/date range. A search with no prior hit (direct landing

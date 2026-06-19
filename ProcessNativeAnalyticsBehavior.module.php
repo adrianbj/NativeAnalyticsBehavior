@@ -508,7 +508,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
     /**
      * One titled interactions group (a table) for the overview. $rows are in the
-     * interactionRow() shape. $heading is plain text ("Site-wide" or "Searches").
+     * interactionRow() shape. $heading is plain text (e.g. "Site-wide").
      */
     protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
         if(!$rows) return '';
@@ -598,14 +598,6 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $site = array_values($display);
         usort($site, function($a, $b) { return $b['c'] <=> $a['c']; });
         $out .= $this->renderInteractionGroup('Site-wide', 'Elements appearing on 2+ pages (nav, footer, shared components).', $site, $sanitizer);
-
-        // Site-wide searches (terms are not element/page-bound).
-        $searchRows = [];
-        foreach($this->core->getSearchTermsAllPages($from, $to) as $r) {
-            $searchRows[] = ['selector' => '', 'label' => (string) ($r['label'] ?? ''),
-                'c' => (int) $r['c'], 'type' => 'search', 'mode' => 'origin', 'dead' => 0, 'rage' => 0];
-        }
-        $out .= $this->renderInteractionGroup('Searches', 'Search terms across the site.', $searchRows, $sanitizer);
 
         if($out === '') $out = '<p class="nab-frust-none">No interactions recorded.</p>';
         return '<div class="nab-overview-interactions">' . $out . '</div>';
