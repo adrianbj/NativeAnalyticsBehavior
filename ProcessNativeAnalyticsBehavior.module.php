@@ -516,7 +516,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
         $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
         $out .= '<thead><tr><th>Element</th><th>Type</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
-        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer);
+        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer, false);
         $out .= '</tbody></table></div>';
         return $out;
     }
@@ -575,10 +575,27 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $siteAgg[$key]['rage'] += $r['rage'];
         }
 
+        // Collapse rows that present identically (same visible label + type) but
+        // came from different selectors — e.g. a "FAQ" link in both the header and
+        // footer — into one summed row. Overview rows are inert, so the specific
+        // selector no longer matters for display.
+        $display = [];
+        foreach($siteAgg as $r) {
+            $shown = $r['label'] !== '' ? $r['label'] : $r['selector'];
+            $key = $shown . "\0" . $r['type'];
+            if(!isset($display[$key])) {
+                $display[$key] = $r;
+            } else {
+                $display[$key]['c'] += $r['c'];
+                $display[$key]['dead'] += $r['dead'];
+                $display[$key]['rage'] += $r['rage'];
+            }
+        }
+
         $out = '';
 
         // Site-wide group, ranked by count desc.
-        $site = array_values($siteAgg);
+        $site = array_values($display);
         usort($site, function($a, $b) { return $b['c'] <=> $a['c']; });
         $out .= $this->renderInteractionGroup('Site-wide', 'Elements appearing on 2+ pages (nav, footer, shared components).', $site, $sanitizer);
 
@@ -658,9 +675,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
      * back to the raw selector) with inline dead/rage badge counts, the
      * interaction type, and the count. When a selector is known the row
      * carries it in data-nab-sel and is made focusable, so heatmap.js can
-     * scroll the backdrop to that element on click.
+     * scroll the backdrop to that element on click. Pass $interactive=false
+     * (the all-pages overview, which has no backdrop) to render an inert row
+     * with no click affordance.
      */
-    protected function interactionRow($row, $sanitizer) {
+    protected function interactionRow($row, $sanitizer, $interactive = true) {
         $label = trim((string) $row['label']);
         $selector = (string) $row['selector'];
         if(($row['type'] ?? '') === 'search') {
@@ -678,7 +697,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 : '<code class="nab-click-sel">' . $sanitizer->entities($selector) . $badges . '</code>';
         }
         $labelAttr = $label !== '' ? ' data-nab-label="' . $sanitizer->entities($label) . '"' : '';
-        $attrs = $selector !== ''
+        $attrs = ($interactive && $selector !== '')
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '"' . $labelAttr . ' tabindex="0"'
             : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
