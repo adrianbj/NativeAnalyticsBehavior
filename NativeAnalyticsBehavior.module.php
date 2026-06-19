@@ -1195,11 +1195,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $db = $this->wire('database');
         $limit = max(1, min(200, (int) $limit));
         $collate = $this->naHashCollation();
+        $allPages = ((string) $path === '');
         $params = [
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
             ':from' => (string) $from,
             ':to' => (string) $to,
         ];
+        if(!$allPages) $params[':ph'] = md5('/' . ltrim((string) $path, '/'));
         $deviceSql = '';
         if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
             $deviceSql = " AND `device`=:dev";
@@ -1265,7 +1266,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ) entry ON entry.`sh` = h.`session_hash`
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+                    WHERE " . ($allPages ? "" : "`path_hash`=:ph AND ") . "`created_date` BETWEEN :from AND :to
                       AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
                 )
                 GROUP BY h.`session_hash`" . $havingSql . "
@@ -1327,17 +1328,20 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         if(!$this->hasHitsTable()) return $empty;
         $db = $this->wire('database');
         $collate = $this->naHashCollation();
+        $allPages = ((string) $path === '');
         $params = [
-            ':ph' => md5('/' . ltrim((string) $path, '/')),
             ':from' => (string) $from,
             ':to' => (string) $to,
         ];
-        $params[':ph2'] = $params[':ph'];
         $params[':from2'] = $params[':from'];
         $params[':to2'] = $params[':to'];
-        $params[':ph3'] = $params[':ph'];
         $params[':from3'] = $params[':from'];
         $params[':to3'] = $params[':to'];
+        if(!$allPages) {
+            $params[':ph'] = md5('/' . ltrim((string) $path, '/'));
+            $params[':ph2'] = $params[':ph'];
+            $params[':ph3'] = $params[':ph'];
+        }
         $deviceSql = '';
         if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
             $deviceSql = " AND `device`=:dev";
@@ -1392,7 +1396,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 LEFT JOIN (
                     SELECT `na_session_hash`, MAX(`scroll_pct`) AS page_scroll
                     FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `type`='scroll' AND `path_hash`=:ph2
+                    WHERE `type`='scroll'" . ($allPages ? "" : " AND `path_hash`=:ph2") . "
                       AND `created_date` BETWEEN :from2 AND :to2
                       AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
                     GROUP BY `na_session_hash`
@@ -1400,14 +1404,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 LEFT JOIN (
                     SELECT `na_session_hash`, COUNT(*) AS page_clicks
                     FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `type` IN ('click','copy') AND `path_hash`=:ph3
+                    WHERE `type` IN ('click','copy')" . ($allPages ? "" : " AND `path_hash`=:ph3") . "
                       AND `created_date` BETWEEN :from3 AND :to3
                       AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
                     GROUP BY `na_session_hash`
                 ) pc ON pc.`na_session_hash`$collate = h.`session_hash`
                 WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
                     SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `path_hash`=:ph AND `created_date` BETWEEN :from AND :to
+                    WHERE " . ($allPages ? "" : "`path_hash`=:ph AND ") . "`created_date` BETWEEN :from AND :to
                       AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
                 )
                 GROUP BY h.`session_hash`" . $havingSql . "
