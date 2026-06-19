@@ -507,18 +507,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
-     * Human page title for a tracked path, for overview group headings. Falls
-     * back to the raw path when no ProcessWire page resolves.
-     */
-    protected function pageTitleForPath($path) {
-        $p = $this->wire('pages')->get('/' . ltrim((string) $path, '/'));
-        if($p && $p->id && (string) $p->title !== '') return (string) $p->title;
-        return (string) $path;
-    }
-
-    /**
      * One titled interactions group (a table) for the overview. $rows are in the
-     * interactionRow() shape. $heading is plain text (page title or "Site-wide").
+     * interactionRow() shape. $heading is plain text ("Site-wide" or "Searches").
      */
     protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
         if(!$rows) return '';
@@ -569,22 +559,20 @@ class ProcessNativeAnalyticsBehavior extends Process {
             $pathsByKey[$key][$r['path']] = true;
         }
 
-        // Partition into site-wide (summed across pages) and per-page rows.
+        // Aggregate the site-wide elements (those on 2+ pages), summing counts
+        // across pages. Page-specific elements (on a single path) are not shown
+        // in the overview — drill into a page to see its own interactions.
         $siteAgg = []; // key => merged row
-        $byPage = [];  // path => rows[]
         foreach($rows as $r) {
             $key = $r['selector'] . "\0" . $r['label'];
-            if(count($pathsByKey[$key]) >= 2) {
-                if(!isset($siteAgg[$key])) {
-                    $siteAgg[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
-                        'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
-                }
-                $siteAgg[$key]['c'] += $r['c'];
-                $siteAgg[$key]['dead'] += $r['dead'];
-                $siteAgg[$key]['rage'] += $r['rage'];
-            } else {
-                $byPage[$r['path']][] = $r;
+            if(count($pathsByKey[$key]) < 2) continue;
+            if(!isset($siteAgg[$key])) {
+                $siteAgg[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
+                    'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
             }
+            $siteAgg[$key]['c'] += $r['c'];
+            $siteAgg[$key]['dead'] += $r['dead'];
+            $siteAgg[$key]['rage'] += $r['rage'];
         }
 
         $out = '';
@@ -593,19 +581,6 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $site = array_values($siteAgg);
         usort($site, function($a, $b) { return $b['c'] <=> $a['c']; });
         $out .= $this->renderInteractionGroup('Site-wide', 'Elements appearing on 2+ pages (nav, footer, shared components).', $site, $sanitizer);
-
-        // Per-page groups, ordered by total interaction count desc.
-        $pageTotals = [];
-        foreach($byPage as $path => $prows) {
-            $sum = 0; foreach($prows as $r) $sum += $r['c'];
-            $pageTotals[$path] = $sum;
-        }
-        arsort($pageTotals);
-        foreach(array_keys($pageTotals) as $path) {
-            $prows = $byPage[$path];
-            usort($prows, function($a, $b) { return $b['c'] <=> $a['c']; });
-            $out .= $this->renderInteractionGroup($this->pageTitleForPath($path), $path, $prows, $sanitizer);
-        }
 
         // Site-wide searches (terms are not element/page-bound).
         $searchRows = [];
@@ -616,7 +591,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= $this->renderInteractionGroup('Searches', 'Search terms across the site.', $searchRows, $sanitizer);
 
         if($out === '') $out = '<p class="nab-frust-none">No interactions recorded.</p>';
-        return $out;
+        return '<div class="nab-overview-interactions">' . $out . '</div>';
     }
 
     protected function renderOverviewSessions($from, $to, $nonceAttr) {
