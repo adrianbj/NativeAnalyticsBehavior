@@ -1052,8 +1052,9 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
-     * Frustration-signal clicks (dead or rage) grouped by selector for a
-     * path/device/date range. $flag is 'dead' or 'rage'. Returns rows:
+     * Dead-click counts grouped by selector for a path/device/date range. $flag
+     * is kept for symmetry but only 'dead' uses this raw event count now — rage
+     * is counted per session in getRageClicks(). Returns rows:
      * ['selector'=>string, 'label'=>string, 'c'=>count] descending by count.
      */
     protected function getFrustrationClicks($flag, $path, $device, $fromDate, $toDate) {
@@ -1077,13 +1078,34 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $this->getFrustrationClicks('dead', $path, $device, $fromDate, $toDate);
     }
 
+    /**
+     * Rage clicks grouped by selector for a path/device/date range, counted as
+     * the number of DISTINCT sessions that rage-clicked the element (not the raw
+     * count of rage-flagged click events). Matches how Clarity/Hotjar report rage
+     * — "how many sessions hit it" — so one frantic burst counts once. Events
+     * with no na_session_hash are excluded (can't attribute to a session). Rows
+     * ['selector','label','c'] descending by count.
+     */
     public function getRageClicks($path, $device, $fromDate, $toDate) {
-        return $this->getFrustrationClicks('rage', $path, $device, $fromDate, $toDate);
+        $db = $this->wire('database');
+        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(DISTINCT `na_session_hash`) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `rage`=1 AND `path_hash`=:ph AND `device`=:dev
+              AND `created_date` BETWEEN :from AND :to AND `selector` <> '' AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
+            GROUP BY `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
+            ':ph' => md5('/' . ltrim((string) $path, '/')),
+            ':dev' => (string) $device,
+            ':from' => (string) $fromDate,
+            ':to' => (string) $toDate,
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
     /**
-     * Cross-page, device-aggregated frustration clicks ($flag = 'dead'|'rage')
-     * grouped by page + selector. All-pages counterpart of getFrustrationClicks.
+     * Cross-page, device-aggregated dead-click counts grouped by page + selector.
+     * All-pages counterpart of getFrustrationClicks ($flag kept for symmetry, but
+     * only 'dead' uses it — rage is per-session, see getRageSessionsAllPages).
      */
     protected function getFrustrationClicksAllPages($flag, $fromDate, $toDate) {
         $col = $flag === 'rage' ? 'rage' : 'dead';
@@ -1100,8 +1122,22 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $this->getFrustrationClicksAllPages('dead', $fromDate, $toDate);
     }
 
-    public function getRageClicksAllPages($fromDate, $toDate) {
-        return $this->getFrustrationClicksAllPages('rage', $fromDate, $toDate);
+    /**
+     * Distinct (selector, session) pairs for rage clicks across all pages, for
+     * the overview. The caller counts rage per displayed element as the number
+     * of distinct sessions — summing per-page/per-selector counts would
+     * double-count a session that raged on the same element more than once — so
+     * this returns the raw session set per selector rather than a count. Events
+     * with no na_session_hash are excluded. Rows ['selector','sess'].
+     */
+    public function getRageSessionsAllPages($fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT DISTINCT `selector`, `na_session_hash` AS sess FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `rage`=1 AND `created_date` BETWEEN :from AND :to
+              AND `selector` <> '' AND `na_session_hash` <> ''" . $this->botExclusionSql();
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 
     /**

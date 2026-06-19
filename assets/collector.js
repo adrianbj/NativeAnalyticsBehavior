@@ -244,10 +244,11 @@
     return !!(el && el.closest && el.closest(IGNORE_SEL));
   }
 
-  // Rage click: 3+ clicks within 1s landing within ~30px of each other — a
-  // classic frustration signal. Keep a tiny rolling buffer of recent clicks.
+  // Rage click: 5+ clicks within 500ms landing within ~30px of each other — a
+  // classic frustration signal (matches Hotjar's 5-clicks/500ms threshold).
+  // Keep a tiny rolling buffer of recent clicks.
   var recentClicks = [];
-  var RAGE_MS = 1000, RAGE_PX = 30, RAGE_MIN = 3;
+  var RAGE_MS = 500, RAGE_PX = 30, RAGE_MIN = 5;
   function isRageClick(now, x, y) {
     recentClicks.push({ t: now, x: x, y: y });
     while (recentClicks.length && now - recentClicks[0].t > RAGE_MS) recentClicks.shift();
@@ -263,7 +264,7 @@
   // target within the browser's double-click window and produce one navigation,
   // so the second is noise that double-counts the click. Collapse a click that
   // repeats the immediately-preceding one — same selector, within DBLCLICK_MS and
-  // DBLCLICK_PX — into a single recorded click. Genuine rage bursts (3+ rapid
+  // DBLCLICK_PX — into a single recorded click. Genuine rage bursts (5+ rapid
   // clicks) are exempt: those are kept as a frustration signal.
   var lastClick = null; // {t, selector, x, y} of the last queued click
   var DBLCLICK_MS = 350, DBLCLICK_PX = 12;
