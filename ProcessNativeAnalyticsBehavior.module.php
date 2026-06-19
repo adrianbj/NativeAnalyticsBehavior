@@ -509,15 +509,17 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
     /**
      * One titled interactions group (a table) for the overview. $rows are in the
-     * interactionRow() shape. $heading is plain text (e.g. "Site-wide").
+     * interactionRow() shape. $heading is plain text (e.g. "Clicks", "Copies").
      */
     protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
         if(!$rows) return '';
         $out  = '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
         if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
         $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
-        $out .= '<thead><tr><th>Element</th><th>Type</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
-        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer, false);
+        // Each overview table is a single interaction type, so the Type column
+        // would be redundant — drop it here (and in interactionRow via $showType).
+        $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
+        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer, false, false);
         $out .= '</tbody></table></div>';
         return $out;
     }
@@ -553,28 +555,34 @@ class ProcessNativeAnalyticsBehavior extends Process {
             ];
         }
 
-        // Aggregate every element across all pages by what it shows in the table
-        // (its visible label, or the raw selector when unlabeled) plus type, so the
-        // same element repeated across pages — header/footer links, a shared form
-        // field, anything — sums into a single row. Overview rows are inert, so the
+        // Aggregate by visible label (or the raw selector when unlabeled) within
+        // each interaction type, so the same element repeated across pages —
+        // header/footer links, a shared form field, anything — sums into one row.
+        // Clicks and copies get their own tables. Overview rows are inert, so the
         // specific selector no longer matters for display.
-        $display = [];
+        $byType = ['click' => [], 'copy' => []];
         foreach($rows as $r) {
+            $type = $r['type'] === 'copy' ? 'copy' : 'click';
             $shown = $r['label'] !== '' ? $r['label'] : $r['selector'];
-            $key = $shown . "\0" . $r['type'];
-            if(!isset($display[$key])) {
-                $display[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
-                    'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
+            if(!isset($byType[$type][$shown])) {
+                $byType[$type][$shown] = ['selector' => $r['selector'], 'label' => $r['label'],
+                    'c' => 0, 'type' => $type, 'dead' => 0, 'rage' => 0];
             }
-            $display[$key]['c'] += $r['c'];
-            $display[$key]['dead'] += $r['dead'];
-            $display[$key]['rage'] += $r['rage'];
+            $byType[$type][$shown]['c'] += $r['c'];
+            $byType[$type][$shown]['dead'] += $r['dead'];
+            $byType[$type][$shown]['rage'] += $r['rage'];
         }
 
-        // Ranked by count desc.
-        $items = array_values($display);
-        usort($items, function($a, $b) { return $b['c'] <=> $a['c']; });
-        $out = $this->renderInteractionGroup('Top interactions', 'Clicks and copies across all pages, combined.', $items, $sanitizer);
+        $sortDesc = function($a, $b) { return $b['c'] <=> $a['c']; };
+        $clicks = array_values($byType['click']);
+        usort($clicks, $sortDesc);
+        $copies = array_values($byType['copy']);
+        usort($copies, $sortDesc);
+
+        // Each group renders only when it has rows, so an absent table (e.g. no
+        // copies in range) simply doesn't appear.
+        $out  = $this->renderInteractionGroup('Clicks', 'Across all pages, combined.', $clicks, $sanitizer);
+        $out .= $this->renderInteractionGroup('Copies', 'Text copied from these elements.', $copies, $sanitizer);
 
         if($out === '') $out = '<p class="nab-frust-none">No interactions recorded.</p>';
         return '<div class="nab-overview-interactions">' . $out . '</div>';
@@ -646,9 +654,10 @@ class ProcessNativeAnalyticsBehavior extends Process {
      * carries it in data-nab-sel and is made focusable, so heatmap.js can
      * scroll the backdrop to that element on click. Pass $interactive=false
      * (the all-pages overview, which has no backdrop) to render an inert row
-     * with no click affordance.
+     * with no click affordance, and $showType=false to omit the Type cell (the
+     * overview's per-type tables don't need it).
      */
-    protected function interactionRow($row, $sanitizer, $interactive = true) {
+    protected function interactionRow($row, $sanitizer, $interactive = true, $showType = true) {
         $label = trim((string) $row['label']);
         $selector = (string) $row['selector'];
         if(($row['type'] ?? '') === 'search') {
@@ -669,8 +678,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $attrs = ($interactive && $selector !== '')
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '"' . $labelAttr . ' tabindex="0"'
             : '';
+        $typeCell = $showType ? '<td>' . $sanitizer->entities($row['type']) . '</td>' : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
-            . '<td>' . $sanitizer->entities($row['type']) . '</td>'
+            . $typeCell
             . '<td class="nab-click-num">' . (int) $row['c'] . '</td></tr>';
     }
 
