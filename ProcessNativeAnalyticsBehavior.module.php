@@ -720,7 +720,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $title = $allPages ? 'All sessions in range' : ucfirst($dev . 'sessions on this page');
         $out  = '<div class="pwna-panel nab-sessions" id="nab-sessions">';
         $out .= '<h3 class="nab-frust-title">' . $title . '</h3>';
-        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading sessions…</p></div>';
+        $out .= '<div id="nab-session-list" class="nab-session-list"><p class="nab-frust-none">Loading ' . $dev . 'sessions…</p></div>';
         $out .= '</div>';
         return $out;
     }
