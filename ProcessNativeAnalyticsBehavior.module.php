@@ -513,7 +513,9 @@ class ProcessNativeAnalyticsBehavior extends Process {
      */
     protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
         if(!$rows) return '';
-        $out  = '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
+        // Wrapped in a column so the groups can sit side-by-side (see .nab-overview-col).
+        $out  = '<div class="nab-overview-col">';
+        $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
         if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
         $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
         // Each overview table is a single interaction type, so the Type column
@@ -521,6 +523,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
         foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer, false, false);
         $out .= '</tbody></table></div>';
+        $out .= '</div>';
         return $out;
     }
 
