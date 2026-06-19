@@ -938,6 +938,36 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * Cross-page, device-aggregated click counts grouped by page + selector,
+     * for the all-pages overview. Mirrors getClickSelectorHeatmap but drops the
+     * path_hash/device filters and carries the raw `path` so callers can group
+     * rows by page. Rows: ['path','selector','label'(MAX),'c'] desc by count.
+     */
+    public function getClickSelectorHeatmapAllPages($fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT `path`, `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
+            GROUP BY `path`, `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Cross-page, device-aggregated copy counts grouped by page + selector.
+     * The all-pages counterpart of getCopySelectorHeatmap.
+     */
+    public function getCopySelectorHeatmapAllPages($fromDate, $toDate) {
+        $db = $this->wire('database');
+        $sql = "SELECT `path`, `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='copy' AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
+            GROUP BY `path`, `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
      * Search counts grouped by term for a path/device/date range, read from
      * NativeAnalytics' pwna_hits (NA extracts the term from results-page URLs
      * via its searchQueryVars setting — this module records nothing itself).
@@ -958,6 +988,27 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
             ':dev' => (string) $device,
+            ':from' => (string) $fromDate . ' 00:00:00',
+            ':to' => (string) $toDate . ' 23:59:59',
+        ]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Site-wide search-term counts (all pages, all devices) from pwna_hits, for
+     * the all-pages overview. Mirrors getSearchTermsForPath without the
+     * path_hash/device filters. Rows ['label'=>term,'c'=>count] desc; [] when
+     * the hits table is absent.
+     */
+    public function getSearchTermsAllPages($fromDate, $toDate) {
+        if(!$this->hasHitsTable()) return [];
+        $db = $this->wire('database');
+        $botSql = empty($this->excludeNaBots) ? '' : " AND `is_bot`=0";
+        $sql = "SELECT `search_term` AS label, COUNT(*) AS c FROM `pwna_hits`
+            WHERE `search_term` <> '' AND `created_at` BETWEEN :from AND :to" . $botSql . "
+            GROUP BY `search_term` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([
             ':from' => (string) $fromDate . ' 00:00:00',
             ':to' => (string) $toDate . ' 23:59:59',
         ]);
@@ -1049,6 +1100,29 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
     public function getRageClicks($path, $device, $fromDate, $toDate) {
         return $this->getFrustrationClicks('rage', $path, $device, $fromDate, $toDate);
+    }
+
+    /**
+     * Cross-page, device-aggregated frustration clicks ($flag = 'dead'|'rage')
+     * grouped by page + selector. All-pages counterpart of getFrustrationClicks.
+     */
+    protected function getFrustrationClicksAllPages($flag, $fromDate, $toDate) {
+        $col = $flag === 'rage' ? 'rage' : 'dead';
+        $db = $this->wire('database');
+        $sql = "SELECT `path`, `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='click' AND `$col`=1 AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
+            GROUP BY `path`, `selector` ORDER BY c DESC";
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+    }
+
+    public function getDeadClicksAllPages($fromDate, $toDate) {
+        return $this->getFrustrationClicksAllPages('dead', $fromDate, $toDate);
+    }
+
+    public function getRageClicksAllPages($fromDate, $toDate) {
+        return $this->getFrustrationClicksAllPages('rage', $fromDate, $toDate);
     }
 
     /**
