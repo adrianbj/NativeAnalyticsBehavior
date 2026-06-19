@@ -154,7 +154,9 @@
       // not render over a newer one (the checkboxes re-derive from
       // listFilters, so a stale list would disagree with them).
       var token = ++listToken;
-      var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "/") +
+      var allPages = !cfg.path;
+      var url = cfg.listUrl + "?path=" + encodeURIComponent(cfg.path || "") +
+        (allPages ? "&all=1" : "") +
         "&from=" + encodeURIComponent(cfg.from || "") + "&to=" + encodeURIComponent(cfg.to || "") +
         (cfg.device ? "&device=" + encodeURIComponent(cfg.device) : "") +
         (listFilters.min_time ? "&min_time=1" : "") +
