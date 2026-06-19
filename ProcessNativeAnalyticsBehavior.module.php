@@ -517,24 +517,24 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
     /**
      * A row-hover tooltip listing the pages an aggregated interaction happened
-     * on, "path (count)" busiest first, joined with a middot. Capped so a
-     * site-wide element (nav/footer) doesn't produce an enormous tooltip. The
-     * UIkit tooltip renders the title as one wrapping string, so entries are
-     * separated rather than newline-listed. Plain text — the caller escapes it.
+     * on, "path (count)" per line, busiest first. Capped so a site-wide element
+     * (nav/footer) doesn't produce an enormous tooltip. Newline-separated; the
+     * tooltip is styled with white-space: pre-line so each page lands on its own
+     * line. Plain text — the caller escapes it.
      */
     protected function pagesTooltip(array $pageCounts) {
         arsort($pageCounts);
         $total = count($pageCounts);
         $cap = 15;
-        $parts = [];
+        $lines = [];
         foreach($pageCounts as $path => $c) {
-            if(count($parts) >= $cap) {
-                $parts[] = '…and ' . ($total - $cap) . ' more';
+            if(count($lines) >= $cap) {
+                $lines[] = '…and ' . ($total - $cap) . ' more';
                 break;
             }
-            $parts[] = $path . ' (' . (int) $c . ')';
+            $lines[] = $path . ' (' . (int) $c . ')';
         }
-        return implode(' · ', $parts);
+        return implode("\n", $lines);
     }
 
     /**
