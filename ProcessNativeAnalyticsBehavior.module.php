@@ -196,6 +196,48 @@ class ProcessNativeAnalyticsBehavior extends Process {
         exit;
     }
 
+    /**
+     * The controls form shared by the per-page view and the all-pages overview.
+     * $opts: rangeOptsHtml, fromInput, toInput, path, topOpts (option HTML),
+     * deviceOpts (option HTML; '' omits the Device control, as in the overview).
+     */
+    protected function renderToolbar(array $opts) {
+        $sanitizer = $this->wire('sanitizer');
+        $out  = '<form method="get" class="pwna-toolbar pwna-panel pwna-toolbar-panel">';
+        $out .= '<input type="hidden" name="prev_path" value="' . $sanitizer->entities($opts['path']) . '">';
+        $out .= '<div class="pwna-toolbar-main"><div class="pwna-toolbar-left">';
+        $out .= '<label>Quick range <select name="range">' . $opts['rangeOptsHtml'] . '</select></label>';
+        $out .= '<label>From <input type="date" name="from" value="' . $sanitizer->entities($opts['fromInput']) . '"></label>';
+        $out .= '<label>To <input type="date" name="to" value="' . $sanitizer->entities($opts['toInput']) . '"></label>';
+        if($opts['deviceOpts'] !== '') {
+            $out .= '<label>Device <select name="device">' . $opts['deviceOpts'] . '</select></label>';
+        }
+        $out .= '<label>Top pages <select data-nab-toppages>' . $opts['topOpts'] . '</select></label>';
+        $out .= '<label class="pwna-pagefind nab-pathfind">Find page '
+            . '<input type="text" name="path" autocomplete="off" placeholder="Search tracked paths" value="' . $sanitizer->entities($opts['path']) . '" data-nab-pathsearch="1">'
+            . '<div class="nab-pathfind-results" data-nab-pathsearch-results hidden></div></label>';
+        $out .= '<button class="ui-button" type="submit">Apply</button>';
+        $out .= '</div></div>';
+        $out .= '</form>';
+        return $out;
+    }
+
+    /**
+     * The path-autocomplete config + pathsearch.js, emitted in both the overview
+     * and per-page views so the Find page field always works. '' when the
+     * process page can't be resolved.
+     */
+    protected function renderPathSearchScript($nonceAttr) {
+        $sanitizer = $this->wire('sanitizer');
+        $procPage = $this->wire('pages')->get("template=admin, process=ProcessNativeAnalyticsBehavior, include=all");
+        if(!$procPage || !$procPage->id) return '';
+        $cfg = json_encode(['url' => $procPage->url . 'path-search/'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+        $out  = '<script type="application/json" id="nab-pathsearch-config">' . $cfg . '</script>';
+        $psJs = $this->core->getVersionedAssetUrl('assets/pathsearch.js');
+        $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($psJs) . '" defer></script>';
+        return $out;
+    }
+
     // Build the heatmap dashboard markup (controls, backdrop stage, embedded
     // data, loader script). Public so NativeAnalyticsBehavior can call it to
     // render the injected "Behavior" tab in the main NativeAnalytics dashboard.
@@ -231,7 +273,8 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 if($selected && $selected->id) $path = $selected->url;
             }
         }
-        if(!$path) $path = '/';
+        // No explicit path and no adopted page_id => all-pages overview mode.
+        $allPages = ($path === '');
         // Quick range is the base period (mirrors NativeAnalytics' toolbar): an
         // explicit From and/or To overrides it. The date inputs stay empty while a
         // quick range drives the view, so the dropdown reads as the active control.
@@ -239,6 +282,10 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $range = (string) $input->get('range');
         if(!isset($rangeOpts[$range])) $range = '30d';
         $rangeDays = ['7d' => 7, '30d' => 30, '90d' => 90][$range];
+        $rangeOptsHtml = '';
+        foreach($rangeOpts as $v => $label) {
+            $rangeOptsHtml .= '<option value="' . $v . '"' . ($v === $range ? ' selected' : '') . '>' . $label . '</option>';
+        }
         $fromInput = $sanitizer->date($input->get('from'), 'Y-m-d') ?: '';
         $toInput = $sanitizer->date($input->get('to'), 'Y-m-d') ?: '';
         $custom = ($fromInput !== '' || $toInput !== '');
@@ -248,6 +295,14 @@ class ProcessNativeAnalyticsBehavior extends Process {
         } else {
             $to = date('Y-m-d');
             $from = date('Y-m-d', strtotime('-' . ($rangeDays - 1) . ' days'));
+        }
+        if($allPages) {
+            $out  = $deps;
+            $out .= $this->renderPathSearchScript($nonceAttr);
+            if(!$paths) {
+                return $out . '<p>No behavior data collected yet. Browse the front-end (and click around) to populate heatmaps.</p>';
+            }
+            return $out . $this->renderOverview($from, $to, $rangeOptsHtml, $fromInput, $toInput, $nonceAttr);
         }
         // Device session counts drive both the dropdown labels and the fallback below.
         $deviceCounts = $this->core->getDeviceSessionCounts($path, $from, $to);
@@ -309,45 +364,23 @@ class ProcessNativeAnalyticsBehavior extends Process {
                 . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';
         }
 
-        $rangeOptsHtml = '';
-        foreach($rangeOpts as $v => $label) {
-            $rangeOptsHtml .= '<option value="' . $v . '"' . ($v === $range ? ' selected' : '') . '>' . $label . '</option>';
-        }
-
         // Toolbar mirrors the NativeAnalytics dashboard tabs: pwna-toolbar panel
         // with the quick-range/period control first, then From/To, then the
         // page/device filters. Date inputs are blank while a quick range drives the
         // view (an explicit date overrides the range — see the date logic above).
         $out  = $deps;
-        $out .= '<form method="get" class="pwna-toolbar pwna-panel pwna-toolbar-panel">';
-        // Lets the server detect a page change on submit, so the device resets to
-        // the one with the most results for the newly chosen page.
-        $out .= '<input type="hidden" name="prev_path" value="' . $sanitizer->entities($path) . '">';
-        $out .= '<div class="pwna-toolbar-main"><div class="pwna-toolbar-left">';
-        $out .= '<label>Quick range <select name="range">' . $rangeOptsHtml . '</select></label>';
-        $out .= '<label>From <input type="date" name="from" value="' . $sanitizer->entities($fromInput) . '"></label>';
-        $out .= '<label>To <input type="date" name="to" value="' . $sanitizer->entities($toInput) . '"></label>';
-        $out .= '<label>Device <select name="device">' . $deviceOpts . '</select></label>';
-        $out .= '<label>Top pages <select data-nab-toppages>' . $topOpts . '</select></label>';
-        $out .= '<label class="pwna-pagefind nab-pathfind">Find page '
-            . '<input type="text" name="path" autocomplete="off" placeholder="Search tracked paths" value="' . $sanitizer->entities($path) . '" data-nab-pathsearch="1">'
-            . '<div class="nab-pathfind-results" data-nab-pathsearch-results hidden></div></label>';
-        $out .= '<button class="ui-button" type="submit">Apply</button>';
-        $out .= '</div></div>';
-        $out .= '</form>';
+        $out .= $this->renderToolbar([
+            'rangeOptsHtml' => $rangeOptsHtml,
+            'fromInput' => $fromInput,
+            'toInput' => $toInput,
+            'path' => $path,
+            'topOpts' => $topOpts,
+            'deviceOpts' => $deviceOpts,
+        ]);
 
-        // Wire up the path autocomplete. Resolve the Behavior process page URL
-        // explicitly so the search endpoint is correct whether this view is the
-        // standalone page or embedded as a tab in the NativeAnalytics dashboard
-        // (where $page->url would point at NativeAnalytics, not us). Emitted in
-        // every branch below so the field stays usable even with no snapshot.
-        $procPage = $this->wire('pages')->get("template=admin, process=ProcessNativeAnalyticsBehavior, include=all");
-        if($procPage && $procPage->id) {
-            $cfg = json_encode(['url' => $procPage->url . 'path-search/'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-            $out .= '<script type="application/json" id="nab-pathsearch-config">' . $cfg . '</script>';
-            $psJs = $this->core->getVersionedAssetUrl('assets/pathsearch.js');
-            $out .= '<script' . $nonceAttr . ' src="' . $sanitizer->entities($psJs) . '" defer></script>';
-        }
+        // Wire up the path autocomplete. Emitted in every branch below so the
+        // field stays usable even with no snapshot.
+        $out .= $this->renderPathSearchScript($nonceAttr);
 
         if(!$paths) {
             return $out . '<p>No behavior data collected yet. Browse the front-end (and click around) to populate heatmaps.</p>';
@@ -440,6 +473,40 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $out .= $this->renderSessionTrail($path, $from, $to, $nonceAttr, $device);
 
         return $out;
+    }
+
+    /**
+     * The all-pages overview: toolbar (no device control), interactions grouped
+     * by page, and all-sessions totals. No backdrop/heatmap stage — there is no
+     * single captured layout to bind to.
+     */
+    protected function renderOverview($from, $to, $rangeOptsHtml, $fromInput, $toInput, $nonceAttr) {
+        $sanitizer = $this->wire('sanitizer');
+        $topOpts  = '<option value="">Top pages by sessions…</option>';
+        $topOpts .= '<option value="__all__" selected>All pages (overview)</option>';
+        foreach($this->core->getTopPagesBySessions(25, $from, $to) as $tp) {
+            $tpPath = (string) $tp['path'];
+            $topOpts .= '<option value="' . $sanitizer->entities($tpPath) . '">'
+                . $sanitizer->entities($tpPath) . ' (' . (int) $tp['c'] . ')</option>';
+        }
+        $out  = $this->renderToolbar([
+            'rangeOptsHtml' => $rangeOptsHtml,
+            'fromInput' => $fromInput,
+            'toInput' => $toInput,
+            'path' => '',
+            'topOpts' => $topOpts,
+            'deviceOpts' => '', // overview aggregates all devices
+        ]);
+        $out .= $this->renderOverviewInteractions($from, $to); // Task 4
+        $out .= $this->renderOverviewSessions($from, $to, $nonceAttr); // Task 5
+        return $out;
+    }
+
+    protected function renderOverviewInteractions($from, $to) {
+        return '<p>interactions placeholder</p>';
+    }
+    protected function renderOverviewSessions($from, $to, $nonceAttr) {
+        return '<p>sessions placeholder</p>';
     }
 
     /**
