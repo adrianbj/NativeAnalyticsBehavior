@@ -517,23 +517,24 @@ class ProcessNativeAnalyticsBehavior extends Process {
 
     /**
      * A row-hover tooltip listing the pages an aggregated interaction happened
-     * on, "path (count)" per line, busiest first. Capped so a site-wide element
-     * (nav/footer) doesn't produce an enormous tooltip. Plain text — the caller
-     * escapes it for the title attribute.
+     * on, "path (count)" busiest first, joined with a middot. Capped so a
+     * site-wide element (nav/footer) doesn't produce an enormous tooltip. The
+     * UIkit tooltip renders the title as one wrapping string, so entries are
+     * separated rather than newline-listed. Plain text — the caller escapes it.
      */
     protected function pagesTooltip(array $pageCounts) {
         arsort($pageCounts);
         $total = count($pageCounts);
         $cap = 15;
-        $lines = [];
+        $parts = [];
         foreach($pageCounts as $path => $c) {
-            if(count($lines) >= $cap) {
-                $lines[] = '…and ' . ($total - $cap) . ' more';
+            if(count($parts) >= $cap) {
+                $parts[] = '…and ' . ($total - $cap) . ' more';
                 break;
             }
-            $lines[] = $path . ' (' . (int) $c . ')';
+            $parts[] = $path . ' (' . (int) $c . ')';
         }
-        return implode("\n", $lines);
+        return implode(' · ', $parts);
     }
 
     /**
@@ -718,9 +719,11 @@ class ProcessNativeAnalyticsBehavior extends Process {
         $attrs = ($interactive && $selector !== '')
             ? ' class="nab-click-row" data-nab-sel="' . $sanitizer->entities($selector) . '"' . $labelAttr . ' tabindex="0"'
             : '';
-        // Optional hover tooltip (e.g. the overview's per-page breakdown).
+        // Optional hover tooltip (e.g. the overview's per-page breakdown). UIkit
+        // reads the title attribute and styles it; the native title is the
+        // fallback when UIkit isn't present.
         $title = trim((string) ($row['title'] ?? ''));
-        if($title !== '') $attrs .= ' title="' . $sanitizer->entities($title) . '"';
+        if($title !== '') $attrs .= ' title="' . $sanitizer->entities($title) . '" uk-tooltip';
         $typeCell = $showType ? '<td>' . $sanitizer->entities($row['type']) . '</td>' : '';
         return '<tr' . $attrs . '><td>' . $cell . '</td>'
             . $typeCell
