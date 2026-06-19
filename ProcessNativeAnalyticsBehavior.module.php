@@ -502,9 +502,119 @@ class ProcessNativeAnalyticsBehavior extends Process {
         return $out;
     }
 
-    protected function renderOverviewInteractions($from, $to) {
-        return '<p>interactions placeholder</p>';
+    /**
+     * Human page title for a tracked path, for overview group headings. Falls
+     * back to the raw path when no ProcessWire page resolves.
+     */
+    protected function pageTitleForPath($path) {
+        $p = $this->wire('pages')->get('/' . ltrim((string) $path, '/'));
+        if($p && $p->id && (string) $p->title !== '') return (string) $p->title;
+        return (string) $path;
     }
+
+    /**
+     * One titled interactions group (a table) for the overview. $rows are in the
+     * interactionRow() shape. $heading is plain text (page title or "Site-wide").
+     */
+    protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
+        if(!$rows) return '';
+        $out  = '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
+        if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
+        $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
+        $out .= '<thead><tr><th>Element</th><th>Type</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
+        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer);
+        $out .= '</tbody></table></div>';
+        return $out;
+    }
+
+    protected function renderOverviewInteractions($from, $to) {
+        $sanitizer = $this->wire('sanitizer');
+
+        // Fold dead/rage counts onto their (path, selector) click rows.
+        $dead = [];
+        foreach($this->core->getDeadClicksAllPages($from, $to) as $r) {
+            $dead[$r['path'] . "\0" . $r['selector']] = (int) $r['c'];
+        }
+        $rage = [];
+        foreach($this->core->getRageClicksAllPages($from, $to) as $r) {
+            $rage[$r['path'] . "\0" . $r['selector']] = (int) $r['c'];
+        }
+
+        // Build interactionRow-shaped rows tagged with their path.
+        $rows = [];
+        foreach($this->core->getClickSelectorHeatmapAllPages($from, $to) as $r) {
+            $k = $r['path'] . "\0" . $r['selector'];
+            $rows[] = [
+                'path' => (string) $r['path'], 'selector' => (string) $r['selector'],
+                'label' => (string) ($r['label'] ?? ''), 'c' => (int) $r['c'], 'type' => 'click',
+                'dead' => $dead[$k] ?? 0, 'rage' => $rage[$k] ?? 0,
+            ];
+        }
+        foreach($this->core->getCopySelectorHeatmapAllPages($from, $to) as $r) {
+            $rows[] = [
+                'path' => (string) $r['path'], 'selector' => (string) $r['selector'],
+                'label' => (string) ($r['label'] ?? ''), 'c' => (int) $r['c'], 'type' => 'copy',
+                'dead' => 0, 'rage' => 0,
+            ];
+        }
+
+        // A (selector,label) seen on >=2 distinct paths is site-wide (nav/footer).
+        $pathsByKey = [];
+        foreach($rows as $r) {
+            $key = $r['selector'] . "\0" . $r['label'];
+            $pathsByKey[$key][$r['path']] = true;
+        }
+
+        // Partition into site-wide (summed across pages) and per-page rows.
+        $siteAgg = []; // key => merged row
+        $byPage = [];  // path => rows[]
+        foreach($rows as $r) {
+            $key = $r['selector'] . "\0" . $r['label'];
+            if(count($pathsByKey[$key]) >= 2) {
+                if(!isset($siteAgg[$key])) {
+                    $siteAgg[$key] = ['selector' => $r['selector'], 'label' => $r['label'],
+                        'c' => 0, 'type' => $r['type'], 'dead' => 0, 'rage' => 0];
+                }
+                $siteAgg[$key]['c'] += $r['c'];
+                $siteAgg[$key]['dead'] += $r['dead'];
+                $siteAgg[$key]['rage'] += $r['rage'];
+            } else {
+                $byPage[$r['path']][] = $r;
+            }
+        }
+
+        $out = '';
+
+        // Site-wide group, ranked by count desc.
+        $site = array_values($siteAgg);
+        usort($site, function($a, $b) { return $b['c'] <=> $a['c']; });
+        $out .= $this->renderInteractionGroup('Site-wide', 'Elements appearing on 2+ pages (nav, footer, shared components).', $site, $sanitizer);
+
+        // Per-page groups, ordered by total interaction count desc.
+        $pageTotals = [];
+        foreach($byPage as $path => $prows) {
+            $sum = 0; foreach($prows as $r) $sum += $r['c'];
+            $pageTotals[$path] = $sum;
+        }
+        arsort($pageTotals);
+        foreach(array_keys($pageTotals) as $path) {
+            $prows = $byPage[$path];
+            usort($prows, function($a, $b) { return $b['c'] <=> $a['c']; });
+            $out .= $this->renderInteractionGroup($this->pageTitleForPath($path), $path, $prows, $sanitizer);
+        }
+
+        // Site-wide searches (terms are not element/page-bound).
+        $searchRows = [];
+        foreach($this->core->getSearchTermsAllPages($from, $to) as $r) {
+            $searchRows[] = ['selector' => '', 'label' => (string) ($r['label'] ?? ''),
+                'c' => (int) $r['c'], 'type' => 'search', 'mode' => 'origin', 'dead' => 0, 'rage' => 0];
+        }
+        $out .= $this->renderInteractionGroup('Searches', 'Search terms across the site.', $searchRows, $sanitizer);
+
+        if($out === '') $out = '<p class="nab-frust-none">No interactions recorded.</p>';
+        return $out;
+    }
+
     protected function renderOverviewSessions($from, $to, $nonceAttr) {
         return '<p>sessions placeholder</p>';
     }
