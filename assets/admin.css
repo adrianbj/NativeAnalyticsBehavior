@@ -33,6 +33,7 @@
 .nab-click-table .nab-sec-l2 { padding-left: 1.5em; }
 .nab-frust-title { margin: 0 0 .1em; font-size: 1em; }
 .nab-overview-interactions { margin-top: 1.5em; }
+.nab-overview-interactions .pwna-table-wrap + .nab-frust-title { margin-top: 1.5em; }
 .nab-frust-none { font-size: .85em; color: #888; }
 .nab-pathfind { position: relative; }
 .nab-pathfind-results { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 240px; max-width: 420px; max-height: 280px; overflow-y: auto; background: #fff; border: 1px solid #ccc; border-top: 0; border-radius: 0 0 4px 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
