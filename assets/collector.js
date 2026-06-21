@@ -5,6 +5,16 @@
   var pwnaCfg = window.PWNA_CONFIG || {};
   if (!cfg.collectEndpoint || !cfg.heatmaps) return;
 
+  // Capture our own script element during synchronous top-level execution so we
+  // can copy its CSP nonce onto any script we inject later. Under the site's
+  // strict-dynamic + nonce policy (no 'self' in script-src), a child script
+  // created via createElement only stays trusted via strict-dynamic propagation
+  // — clients that honor nonces but not strict-dynamic block it. Stamping the
+  // live nonce keeps the injected snapshot lib allowed on those clients too.
+  // Read from the element (not NAB_CONFIG) so it survives ProCache: the cached
+  // HTML carries the real per-request nonce on this tag; baked-in JSON would not.
+  var nabScriptEl = document.currentScript;
+
   // --- consent / DNT (mirror NativeAnalytics gating) ---
   function getCookie(name) {
     var m = document.cookie.match(new RegExp("(?:^|;\\s*)" + String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)"));
@@ -520,6 +530,8 @@
     if (!cfg.snapshotLib) return;
     var s = document.createElement("script");
     s.src = cfg.snapshotLib;
+    var n = nabScriptEl && nabScriptEl.nonce;
+    if (n) s.setAttribute("nonce", n);
     s.onload = doCapture;
     (document.head || document.documentElement).appendChild(s);
   }
