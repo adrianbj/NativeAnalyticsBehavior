@@ -566,11 +566,20 @@ class ProcessNativeAnalyticsBehavior extends Process {
         if(!$rows) return '';
         $total = count($rows);
         $shown = array_slice($rows, 0, $cap);
-        $rest = array_slice($rows, $cap);
+        // Rows carrying a dead or rage badge are kept past the cap, matching
+        // buildInteractionRows on the per-page table: a frustration signal is
+        // worth acting on wherever it ranks by volume, and folding it into a
+        // summary line is exactly where it would go unnoticed.
+        $rest = [];
+        foreach(array_slice($rows, $cap) as $r) {
+            if(($r['dead'] ?? 0) > 0 || ($r['rage'] ?? 0) > 0) $shown[] = $r;
+            else $rest[] = $r;
+        }
         // Wrapped in a column so the groups can sit side-by-side (see .nab-overview-col).
         $out  = '<div class="nab-overview-col">';
         $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
-        if($total > $cap) $subhead = trim($subhead . ' Top ' . $cap . ' of ' . $total . ' elements.');
+        // Count what's actually rendered, since frustration rows can push it past $cap.
+        if($rest) $subhead = trim($subhead . ' Showing ' . count($shown) . ' of ' . $total . ' elements.');
         if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
         $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
         // Each overview table is a single interaction type, so the Type column

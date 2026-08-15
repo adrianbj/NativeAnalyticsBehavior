@@ -202,9 +202,32 @@
     return (t === "submit" || t === "button" || t === "reset") ? (el.getAttribute("value") || "") : "";
   }
 
+  // Browser translation (Chrome and friends) rewrites the page's text nodes in
+  // place, so a label read afterwards is in the visitor's language, not the
+  // site's. The same button then reports as a separate element per language and
+  // splinters the dashboard into rows that are all the same control.
+  //
+  // The site is served in one language, so a divergence means the page was
+  // machine-translated. Chrome/Google Translate stamps translated-ltr or
+  // translated-rtl on <html>; the lang comparison is the fallback for
+  // translators that swap the attribute instead. Read at init, which is before
+  // any translation can have run (this script is deferred, translation is
+  // later), so it records the language the site actually served.
+  var initialLang = (document.documentElement.getAttribute("lang") || "").toLowerCase();
+  function isTranslated() {
+    var html = document.documentElement;
+    if (!html) return false;
+    if (/\btranslated-(ltr|rtl)\b/.test(html.className || "")) return true;
+    var lang = (html.getAttribute("lang") || "").toLowerCase();
+    return initialLang !== "" && lang !== "" && lang !== initialLang;
+  }
+
   function clickLabel(el) {
     if (!el || el.nodeType !== 1) return "";
     if (el.closest && el.closest("[data-na-block], [data-na-mask]")) return "";
+    // No label rather than a translated one: the click still records, and the
+    // dashboard groups it by selector alongside the untranslated visitors.
+    if (isTranslated()) return "";
     var txt = el.getAttribute("aria-label")
       || (el.nodeName.toLowerCase() === "img" ? el.getAttribute("alt") : "")
       || el.getAttribute("title")
