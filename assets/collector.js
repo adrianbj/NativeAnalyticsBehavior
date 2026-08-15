@@ -153,9 +153,16 @@
   // Visible text only: clone and drop <style>/<script>/<svg> first, since
   // textContent otherwise concatenates CSS from inline SVG icons (e.g. UIKit's
   // accordion-icon <style>) onto the real label.
+  // Form controls are dropped too: a <textarea>'s text content *is* its value,
+  // so a server-rendered field (a form redisplayed after a validation error)
+  // would otherwise publish the visitor's own words as the element's label —
+  // and a <select> would contribute every option at once, which describes
+  // nothing. Both fall through to aria-label/fieldLabel instead.
   function visibleText(el) {
+    var tag = el.nodeName.toLowerCase();
+    if (tag === "textarea" || tag === "select") return "";
     var clone = el.cloneNode(true);
-    var junk = clone.querySelectorAll("style, script, svg");
+    var junk = clone.querySelectorAll("style, script, svg, textarea, select");
     for (var i = 0; i < junk.length; i++) {
       if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
     }

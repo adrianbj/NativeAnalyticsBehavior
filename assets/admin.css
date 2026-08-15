@@ -35,6 +35,7 @@
 .nab-overview-interactions { margin-top: 1.5em; display: flex; flex-wrap: wrap; gap: 1.5em; align-items: flex-start; }
 .nab-overview-col { flex: 1 1 320px; min-width: 0; }
 .nab-overview-col .pwna-table { width: 100%; }
+.nab-row-more td { color: #888; font-style: italic; }
 /* Per-page breakdown tooltips list one page per line, sized to the longest line
    so paths don't wrap (white-space: pre, no max-width cap). Our admin.css only
    loads on this dashboard, so this doesn't restyle tooltips elsewhere. */

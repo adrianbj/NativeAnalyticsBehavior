@@ -893,18 +893,57 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     }
 
     /**
+     * Collapse rows grouped by (…$keys, label) down to one row per $keys,
+     * summing the counts and electing the *most frequently captured* non-empty
+     * label as the group's representative.
+     *
+     * A selector's label isn't guaranteed stable: a form redisplayed after a
+     * validation error, a translated page, an A/B-tested button all vary it.
+     * Picking with SQL's MAX() means picking the alphabetically last variant —
+     * so a single odd capture (an element whose text was, for that one hit,
+     * junk) inherits the entire group's click count and heads the table. The
+     * mode is what visitors actually saw. Ties keep the first row seen, which
+     * is the highest-count one because the queries order by count.
+     */
+    protected function foldByLabel(array $rows, array $keys) {
+        $out = [];
+        foreach($rows as $r) {
+            $k = '';
+            foreach($keys as $f) $k .= $r[$f] . "\0";
+            $c = (int) $r['c'];
+            $label = (string) $r['label'];
+            if(!isset($out[$k])) {
+                $out[$k] = $r;
+                $out[$k]['c'] = 0;
+                $out[$k]['label'] = '';
+                $out[$k]['labelC'] = 0;
+            }
+            $out[$k]['c'] += $c;
+            if($label !== '' && $c > $out[$k]['labelC']) {
+                $out[$k]['labelC'] = $c;
+                $out[$k]['label'] = $label;
+            }
+        }
+        $out = array_values($out);
+        foreach($out as &$r) unset($r['labelC']);
+        unset($r);
+        usort($out, function($a, $b) { return $b['c'] <=> $a['c']; });
+        return $out;
+    }
+
+    /**
      * Click counts grouped by CSS selector for a path/device/date range.
      * Returns rows: ['selector'=>string, 'label'=>string, 'c'=>count], descending
      * by count. `label` is a representative human-readable label (link/button text,
-     * aria-label, etc.); MAX() prefers a non-empty one, and it stays '' for older
-     * clicks captured before labels were collected.
+     * aria-label, etc.) — the most-captured non-empty one, see foldByLabel() — and
+     * stays '' for older clicks captured before labels were collected.
      */
     public function getClickSelectorHeatmap($path, $device, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+        $sql = "SELECT `selector`, `label`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `path_hash`=:ph AND `device`=:dev
               AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
-            GROUP BY `selector` ORDER BY c DESC";
+            GROUP BY `selector`, `label` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
@@ -912,7 +951,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
         ]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return $this->foldByLabel($stmt->fetchAll(\PDO::FETCH_ASSOC), ['selector']);
     }
 
     /**
@@ -923,10 +962,10 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getCopySelectorHeatmap($path, $device, $fromDate, $toDate) {
         $db = $this->wire('database');
-        $sql = "SELECT `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+        $sql = "SELECT `selector`, `label`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='copy' AND `path_hash`=:ph AND `device`=:dev
               AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
-            GROUP BY `selector` ORDER BY c DESC";
+            GROUP BY `selector`, `label` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([
             ':ph' => md5('/' . ltrim((string) $path, '/')),
@@ -934,7 +973,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             ':from' => (string) $fromDate,
             ':to' => (string) $toDate,
         ]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return $this->foldByLabel($stmt->fetchAll(\PDO::FETCH_ASSOC), ['selector']);
     }
 
     /**
@@ -945,12 +984,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getClickSelectorHeatmapAllPages($fromDate, $toDate) {
         $db = $this->wire('database');
-        $sql = "SELECT `path`, `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+        $sql = "SELECT `path`, `selector`, `label`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='click' AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
-            GROUP BY `path`, `selector` ORDER BY c DESC";
+            GROUP BY `path`, `selector`, `label` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return $this->foldByLabel($stmt->fetchAll(\PDO::FETCH_ASSOC), ['path', 'selector']);
     }
 
     /**
@@ -959,12 +998,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      */
     public function getCopySelectorHeatmapAllPages($fromDate, $toDate) {
         $db = $this->wire('database');
-        $sql = "SELECT `path`, `selector`, MAX(`label`) AS label, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
+        $sql = "SELECT `path`, `selector`, `label`, COUNT(*) AS c FROM `" . self::EVENTS_TABLE . "`
             WHERE `type`='copy' AND `created_date` BETWEEN :from AND :to AND `selector` <> ''" . $this->botExclusionSql() . "
-            GROUP BY `path`, `selector` ORDER BY c DESC";
+            GROUP BY `path`, `selector`, `label` ORDER BY c DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([':from' => (string) $fromDate, ':to' => (string) $toDate]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return $this->foldByLabel($stmt->fetchAll(\PDO::FETCH_ASSOC), ['path', 'selector']);
     }
 
     /**

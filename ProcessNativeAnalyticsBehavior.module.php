@@ -538,20 +538,62 @@ class ProcessNativeAnalyticsBehavior extends Process {
     }
 
     /**
+     * Trim a label to $max characters on a word boundary, with an ellipsis when
+     * anything was dropped. Multibyte-safe so a truncated Korean or Greek label
+     * doesn't end mid-character.
+     */
+    protected function shortenLabel($label, $max = 60) {
+        $label = trim((string) $label);
+        if($label === '' || mb_strlen($label) <= $max) return $label;
+        $cut = mb_substr($label, 0, $max);
+        $sp = mb_strrpos($cut, ' ');
+        // Only break on a space when one sits reasonably near the end, so a
+        // long unbroken run (a URL, a token) still gets cut at the limit.
+        if($sp !== false && $sp > $max * 0.6) $cut = mb_substr($cut, 0, $sp);
+        return rtrim($cut) . '…';
+    }
+
+    /**
      * One titled interactions group (a table) for the overview. $rows are in the
      * interactionRow() shape. $heading is plain text (e.g. "Clicks", "Copies").
+     *
+     * Site-wide there is a long tail of elements clicked once or twice, so the
+     * table is capped at $cap rows and the remainder is summarised on a final
+     * line — an uncapped list runs to hundreds of rows and stops being a
+     * summary. The per-page views keep the full detail.
      */
-    protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer) {
+    protected function renderInteractionGroup($heading, $subhead, $rows, $sanitizer, $cap = 25) {
         if(!$rows) return '';
+        $total = count($rows);
+        $shown = array_slice($rows, 0, $cap);
+        $rest = array_slice($rows, $cap);
         // Wrapped in a column so the groups can sit side-by-side (see .nab-overview-col).
         $out  = '<div class="nab-overview-col">';
         $out .= '<h3 class="nab-frust-title">' . $sanitizer->entities($heading) . '</h3>';
+        if($total > $cap) $subhead = trim($subhead . ' Top ' . $cap . ' of ' . $total . ' elements.');
         if($subhead !== '') $out .= '<p class="nab-snapshot-meta">' . $sanitizer->entities($subhead) . '</p>';
         $out .= '<div class="pwna-table-wrap"><table class="pwna-table nab-click-table">';
         // Each overview table is a single interaction type, so the Type column
         // would be redundant — drop it here (and in interactionRow via $showType).
         $out .= '<thead><tr><th>Element</th><th class="nab-click-num">Count</th></tr></thead><tbody>';
-        foreach($rows as $r) $out .= $this->interactionRow($r, $sanitizer, false, false);
+        foreach($shown as $r) {
+            // A click on a paragraph carries the collector's full 100-char label,
+            // which wraps to five or six lines in a narrow overview column and
+            // buries the rows under it. Enough of the text to recognise the
+            // element is plenty here; the per-page tables show it in full.
+            // Unlabelled rows fall back to the raw selector, which runs to 255
+            // characters — shorten that the same way. Overview rows are inert,
+            // so nothing downstream needs the full string.
+            $r['label'] = $this->shortenLabel($r['label']);
+            $r['selector'] = $this->shortenLabel($r['selector']);
+            $out .= $this->interactionRow($r, $sanitizer, false, false);
+        }
+        if($rest) {
+            $restCount = 0;
+            foreach($rest as $r) $restCount += (int) $r['c'];
+            $out .= '<tr class="nab-row-more"><td>…and ' . count($rest) . ' more elements</td>'
+                . '<td class="nab-click-num">' . $restCount . '</td></tr>';
+        }
         $out .= '</tbody></table></div>';
         $out .= '</div>';
         return $out;
