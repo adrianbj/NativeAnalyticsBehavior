@@ -29,6 +29,13 @@ Use `NativeAnalyticsBehavior::eraseVisitor($rawId)` to satisfy data-subject eras
 ## Maintenance
 The retention purge deletes events and snapshot versions older than the retention window, in batches. The newest snapshot version of every page/device bucket is always kept so a page that has not changed still has a heatmap backdrop.
 
+It also trims every bucket to its newest **Snapshot versions kept per page** (default 5), whatever their age. A session resolves to the version live at its time, or the earliest later one, so a few versions per bucket serve the whole event window.
+
+## Snapshots
+The collector serializes the page once per session per page/device bucket, canonicalizes it (scripts removed, node ids renumbered, CSP nonces and `data-csrf-*` attributes dropped), and hashes an identity form of the tree that ignores rrweb's scroll and size attributes. It sends only the hash first; the server answers whether it wants the body, so the multi-hundred-KB upload only happens for a page it has not stored. A new version is stored when the hash is new for the bucket and no version was stored within **Minimum hours between new snapshot versions** (default 24).
+
+Mark an element `data-na-volatile` when its content legitimately differs between visitors of the same page (a shuffled list, a video that swaps its placeholder for an iframe once played). It stays in the stored snapshot and the backdrop, but counts by its tag alone for identity, so it does not make two captures of the same page look like different pages. `data-na-block` still replaces an element with a sized placeholder, and `data-na-mask` still masks text.
+
 By default the purge runs from LazyCron, which means it runs inside whichever visitor request happens to cross the day boundary and holds that visitor's PHP worker and session lock until it finishes. On a busy site, uncheck **Run the retention purge from LazyCron** in the module config and call the purge from a real cron job instead, for example from a ProcessWire-bootstrapped CLI script:
 
 ```php

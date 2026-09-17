@@ -492,26 +492,109 @@
     }
   }
 
-  function stripScripts(n) {
-    if (!n || !n.childNodes || !n.childNodes.length) return;
-    n.childNodes = n.childNodes.filter(function (c) {
-      return !(c && c.type === 2 && c.tagName === "script");
-    });
-    for (var i = 0; i < n.childNodes.length; i++) stripScripts(n.childNodes[i]);
+  // Attributes that differ between two loads of the same markup and carry nothing
+  // the backdrop needs: CSP nonces, per-session CSRF tokens the site stores as data
+  // attributes, and the double-underscore attributes browser extensions stamp on
+  // the root element.
+  function isVolatileAttr(name) {
+    return name === "nonce" || name.indexOf("__") === 0 || name.indexOf("data-csrf-") === 0;
   }
 
-  function uploadSnapshot(node) {
-    var envelope = JSON.stringify({
-      dom: node,
-      path: path,
-      device: deviceClass(),
-      capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0)
-    });
+  // The stored form of a snapshot: scripts gone, volatile attributes gone, node ids
+  // renumbered depth-first so two captures of the same markup serialize identically
+  // even when a late-injected node shifted rrweb's own numbering. rootId (nested
+  // documents) is remapped to the new numbering so rebuild still resolves it.
+  function canonicalize(root) {
+    var idMap = {};
+    var nextId = 1;
+    function walk(n) {
+      if (!n) return;
+      if (n.id !== undefined) idMap[n.id] = nextId;
+      n.id = nextId++;
+      if (n.attributes) {
+        for (var k in n.attributes) if (isVolatileAttr(k)) delete n.attributes[k];
+      }
+      if (n.childNodes && n.childNodes.length) {
+        n.childNodes = n.childNodes.filter(function (c) {
+          return !(c && c.type === 2 && c.tagName === "script");
+        });
+        for (var i = 0; i < n.childNodes.length; i++) walk(n.childNodes[i]);
+      }
+    }
+    function remapRoots(n) {
+      if (!n) return;
+      if (n.rootId !== undefined && idMap[n.rootId] !== undefined) n.rootId = idMap[n.rootId];
+      if (n.childNodes) for (var i = 0; i < n.childNodes.length; i++) remapRoots(n.childNodes[i]);
+    }
+    walk(root);
+    remapRoots(root);
+    return root;
+  }
+
+  // The identity of a snapshot, for deduplication: the canonical tree minus what
+  // legitimately differs between visitors of the same page. rrweb's rr_* attributes
+  // are scroll offsets and viewport-dependent sizes; an element marked
+  // data-na-volatile (a shuffled testimonial list, a video that swaps its facade
+  // for an iframe once played) counts by its tag alone. Both stay in the STORED
+  // snapshot, so the backdrop still shows them; they just do not make two captures
+  // of the same page look like different pages. Ids are dropped as well so the
+  // identity does not depend on numbering at all.
+  function identityJson(root) {
+    function strip(n) {
+      if (!n || typeof n !== "object") return n;
+      var out = {};
+      for (var k in n) {
+        if (k === "id" || k === "rootId" || k === "childNodes" || k === "attributes") continue;
+        out[k] = n[k];
+      }
+      var attrs = n.attributes || null;
+      if (attrs && attrs["data-na-volatile"] !== undefined) return out;
+      if (attrs) {
+        out.attributes = {};
+        for (var a in attrs) if (a.indexOf("rr_") !== 0) out.attributes[a] = attrs[a];
+      }
+      if (n.childNodes) out.childNodes = n.childNodes.map(strip);
+      return out;
+    }
+    return JSON.stringify(strip(root));
+  }
+
+  function sha256Hex(text) {
+    if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) return Promise.resolve(null);
+    return window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (buf) {
+      var bytes = new Uint8Array(buf);
+      var hex = "";
+      for (var i = 0; i < bytes.length; i++) hex += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+      return hex;
+    }).catch(function () { return null; });
+  }
+
+  function postJson(body) {
     // Snapshots fire on load (page is alive) and are far larger than sendBeacon's
     // ~64KB cap; keepalive fetch carries the same cap, so use a plain fetch.
-    try {
-      fetch(cfg.snapshotEndpoint, { method: "POST", body: envelope, headers: { "Content-Type": "application/json" } });
-    } catch (e) {}
+    return fetch(cfg.snapshotEndpoint, { method: "POST", body: body, headers: { "Content-Type": "application/json" } });
+  }
+
+  // Ask before uploading: the server already holds this exact page for this bucket
+  // far more often than not, and a snapshot with inlined CSS runs to hundreds of KB.
+  // Only the hash travels unless the server says it wants the body.
+  function uploadSnapshot(node) {
+    sha256Hex(identityJson(node)).then(function (hash) {
+      if (!hash) return;
+      var meta = {
+        path: path,
+        device: deviceClass(),
+        capture_width: Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+        dom_hash: hash
+      };
+      return postJson(JSON.stringify(meta)).then(function (r) {
+        return r && r.ok ? r.json() : null;
+      }).then(function (res) {
+        if (!res || !res.wanted) return;
+        meta.dom = node;
+        return postJson(JSON.stringify(meta));
+      });
+    }).catch(function () {});
   }
 
   function doCapture() {
@@ -530,9 +613,11 @@
     // (circular, not serializable), so keep only the serializable node tree.
     var node = Array.isArray(result) ? result[0] : result;
     if (!node) return;
-    stripScripts(node);
-    uploadSnapshot(node);
+    uploadSnapshot(canonicalize(node));
   }
+
+  // Exposed for inspection in devtools and for tests; not used by the page.
+  window.NABSnapshot = { canonicalize: canonicalize, identityJson: identityJson };
 
   // Capture at most once per session per (path, device): the server versions a
   // snapshot only when its DOM hash differs from the latest stored one, so one

@@ -8,7 +8,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     const SNAPSHOT_ROUTE = '/nab-snapshot';
     const SNAPSHOT_MAX_BYTES = 4194304; // 4 MB raw upload cap (DOM + inlined CSS)
     // Bump whenever ensureSchema() gains a new table, column, index, or backfill.
-    const SCHEMA_VERSION = 1;
+    const SCHEMA_VERSION = 2;
 
     protected $defaults = [
         'enabled' => 1,
@@ -21,6 +21,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         'blockedIps' => '',       // newline-separated IPs
         'excludeNaBots' => 1,     // hide sessions NativeAnalytics flagged as bots
         'useLazyCron' => 1,       // run the retention purge from LazyCron (else from cron via purgeExpired())
+        'snapshotMinHours' => 24, // at most one new snapshot version per page/device bucket in this window (0 = no cap)
+        'snapshotKeepVersions' => 5, // the purge trims each bucket to its newest N versions
         'schemaVersion' => 0,     // SCHEMA_VERSION that last completed ensureSchema()
     ];
 
@@ -232,7 +234,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             `dom_gz` MEDIUMBLOB NOT NULL,
             PRIMARY KEY (`id`),
             KEY `ver` (`path_hash`, `device`, `captured_at`),
-            KEY `captured_at` (`captured_at`)
+            KEY `captured_at` (`captured_at`),
+            KEY `bucket_hash` (`path_hash`, `device`, `dom_hash`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         // `label` was added after the events table shipped, so the CREATE above
         // is a no-op on existing installs. Add it idempotently for those.
@@ -318,6 +321,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $col = $db->query("SHOW COLUMNS FROM `$tbl` LIKE 'captured_modified'");
         if($col && $col->rowCount() > 0) {
             $db->exec("ALTER TABLE `$tbl` DROP COLUMN `captured_modified`");
+        }
+        // Serves the "do you already hold this exact page?" check that runs before an upload.
+        $idx = $db->query("SHOW INDEX FROM `$tbl` WHERE Key_name='bucket_hash'");
+        if($idx && $idx->rowCount() === 0) {
+            $db->exec("ALTER TABLE `$tbl` ADD KEY `bucket_hash` (`path_hash`, `device`, `dom_hash`)");
         }
     }
     protected function shouldInjectCurrentRequest() {
@@ -657,6 +665,19 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->sendJson(200, ['ok' => true, 'stored' => $inserted]);
     }
 
+    /**
+     * Two request shapes share this endpoint. Without `dom` it is a check: the client
+     * has hashed its canonical snapshot and asks whether to send the body, which
+     * with inlined CSS runs to hundreds of KB. With `dom` it is the upload. Both
+     * answer the same question through snapshotWanted(), so a client that skips the
+     * check (or two racing uploads) cannot store what the check would have refused.
+     *
+     * The hash is the client's, over its identity form of the tree (no ids, no
+     * rr_* attributes, volatile subtrees reduced to their tag). The server cannot
+     * recompute it from the re-encoded JSON it stores, so it is trusted as a dedup
+     * key only: a forged one can add at most one version per cap window, or skip
+     * storing a page that would have been stored, and neither is worth defending.
+     */
     protected function handleSnapshotRequest() {
         if(!$this->enabled || !$this->enableHeatmaps) $this->sendJson(204, ['ok' => true]);
         if(($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') $this->sendJson(405, ['ok' => false]);
@@ -666,7 +687,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $raw = file_get_contents('php://input');
         if($raw === false || strlen($raw) > self::SNAPSHOT_MAX_BYTES) $this->sendJson(413, ['ok' => false]);
         $data = json_decode($raw, true);
-        if(!is_array($data) || !isset($data['dom']) || !is_array($data['dom'])) $this->sendJson(400, ['ok' => false]);
+        if(!is_array($data)) $this->sendJson(400, ['ok' => false]);
 
         $allowedDevices = ['desktop', 'tablet', 'mobile'];
         $device = (string) ($data['device'] ?? '');
@@ -675,36 +696,34 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $path = '/' . ltrim((string) ($data['path'] ?? '/'), '/');
         $path = substr($path, 0, 767);
         $width = max(0, min(65535, (int) ($data['capture_width'] ?? 0)));
-
-        $now = date('Y-m-d H:i:s');
-        $db = $this->wire('database');
         $pathHash = md5($path);
+
+        $domHash = (string) ($data['dom_hash'] ?? '');
+        if($domHash !== '' && !preg_match('/^[0-9a-f]{64}$/', $domHash)) $this->sendJson(400, ['ok' => false]);
+
+        $isCheck = !isset($data['dom']);
+        if($isCheck) {
+            if($domHash === '') $this->sendJson(400, ['ok' => false]);
+            $this->sendJson(200, ['ok' => true, 'wanted' => $this->snapshotWanted($pathHash, $device, $domHash)]);
+        }
+
+        if(!is_array($data['dom'])) $this->sendJson(400, ['ok' => false]);
 
         // JSON_HEX_TAG escapes < and > so the stored DOM can be safely embedded in a
         // <script type="application/json"> block on the admin dashboard; without it,
         // page text containing the literal "</script>" would break out of the tag.
         $domJson = json_encode($data['dom'], JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
         if($domJson === false) $this->sendJson(400, ['ok' => false]);
-        $domHash = hash('sha256', $domJson);
 
-        // Version-on-change (D2): the client uploads once per session per path, but
-        // the markup only rarely differs between sessions, so store a new version
-        // only when this DOM differs from the LATEST stored version for the bucket.
-        // Comparing against the latest (not any historical version) is deliberate:
-        // an A -> B -> A oscillation correctly yields three intervals, each pointing
-        // at the markup live during its window. The endpoint is public, but a forged
-        // upload can now only append a new version dated "now" — it can't clobber the
-        // history older sessions resolve against.
-        $latest = $db->prepare("SELECT `dom_hash` FROM `" . self::SNAPSHOT_TABLE . "`
-            WHERE `path_hash`=:ph AND `device`=:device ORDER BY `captured_at` DESC, `id` DESC LIMIT 1");
-        $latest->execute([':ph' => $pathHash, ':device' => $device]);
-        if($row = $latest->fetch(\PDO::FETCH_ASSOC)) {
-            if(((string) $row['dom_hash']) === $domHash) $this->sendJson(200, ['ok' => true, 'unchanged' => true]);
-        }
+        // Collectors cached from before the hash-first flow upload without a hash.
+        if($domHash === '') $domHash = hash('sha256', $domJson);
+
+        if(!$this->snapshotWanted($pathHash, $device, $domHash)) $this->sendJson(200, ['ok' => true, 'unchanged' => true]);
 
         $gz = gzencode($domJson, 6);
         if($gz === false) $this->sendJson(500, ['ok' => false]);
 
+        $db = $this->wire('database');
         $sql = "INSERT INTO `" . self::SNAPSHOT_TABLE . "`
             (`path`,`path_hash`,`device`,`capture_width`,`dom_hash`,`captured_at`,`dom_gz`)
             VALUES (:path,:ph,:device,:w,:dh,:now,:dom)";
@@ -714,11 +733,39 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $stmt->bindValue(':device', $device);
         $stmt->bindValue(':w', $width, \PDO::PARAM_INT);
         $stmt->bindValue(':dh', $domHash);
-        $stmt->bindValue(':now', $now);
+        $stmt->bindValue(':now', date('Y-m-d H:i:s'));
         $stmt->bindValue(':dom', $gz, \PDO::PARAM_LOB);
         $stmt->execute();
 
         $this->sendJson(200, ['ok' => true]);
+    }
+
+    /**
+     * Should a snapshot with this identity hash be stored for this bucket?
+     *
+     * No when the bucket already holds a version with the same hash, whatever its
+     * age: a page that alternates between a few states (banner shown or not, a
+     * shuffled list) should settle on those few versions, not grow one per session.
+     * No when a version was stored within the last snapshotMinHours: the heatmap
+     * backdrop needs a representative page, not every visitor's variant, and this
+     * bounds what any one bucket can accumulate. Yes otherwise.
+     */
+    protected function snapshotWanted($pathHash, $device, $domHash) {
+        $this->applyDefaults();
+        $db = $this->wire('database');
+        $tbl = self::SNAPSHOT_TABLE;
+
+        $same = $db->prepare("SELECT 1 FROM `$tbl` WHERE `path_hash`=:ph AND `device`=:dev AND `dom_hash`=:dh LIMIT 1");
+        $same->execute([':ph' => $pathHash, ':dev' => $device, ':dh' => $domHash]);
+        if($same->fetchColumn()) return false;
+
+        $minHours = max(0, (int) $this->snapshotMinHours);
+        if($minHours > 0) {
+            $recent = $db->prepare("SELECT 1 FROM `$tbl` WHERE `path_hash`=:ph AND `device`=:dev AND `captured_at` > :since LIMIT 1");
+            $recent->execute([':ph' => $pathHash, ':dev' => $device, ':since' => date('Y-m-d H:i:s', time() - $minHours * 3600)]);
+            if($recent->fetchColumn()) return false;
+        }
+        return true;
     }
 
     public function handleDailyCron(?HookEvent $event = null) {
@@ -743,7 +790,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $maxSeconds = max(0, (int) $maxSeconds);
         $cutoff = $this->retentionCutoff();
         $started = microtime(true);
-        $result = ['events' => 0, 'snapshots' => 0, 'complete' => false, 'seconds' => 0.0];
+        $result = ['events' => 0, 'snapshots' => 0, 'trimmed' => 0, 'complete' => false, 'seconds' => 0.0];
         $outOfTime = function() use ($started, $maxSeconds) {
             return $maxSeconds > 0 && (microtime(true) - $started) >= $maxSeconds;
         };
@@ -781,14 +828,41 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 }
             }
 
-            $result['complete'] = $eventsComplete && $snapshotsComplete;
+            // Then trim every bucket to its newest snapshotKeepVersions versions, whatever
+            // their age. A session resolves to the version live at its time, or failing
+            // that the earliest later one, so a handful per bucket serves the whole
+            // event window; more than that is duplicate copies of the same page.
+            $keep = max(1, (int) $this->snapshotKeepVersions);
+            $excess = $db->prepare("SELECT s.`id` FROM `" . self::SNAPSHOT_TABLE . "` s
+                JOIN (SELECT `id`, ROW_NUMBER() OVER (PARTITION BY `path_hash`, `device` ORDER BY `captured_at` DESC, `id` DESC) AS rn
+                      FROM `" . self::SNAPSHOT_TABLE . "`) r ON r.`id` = s.`id`
+                WHERE r.rn > :keep
+                ORDER BY s.`id` LIMIT " . $batchSize);
+            $trimComplete = false;
+            while(!$outOfTime()) {
+                $excess->bindValue(':keep', $keep, \PDO::PARAM_INT);
+                $excess->execute();
+                $ids = $excess->fetchAll(\PDO::FETCH_COLUMN);
+                if($ids) {
+                    $marks = implode(',', array_fill(0, count($ids), '?'));
+                    $delete = $db->prepare("DELETE FROM `" . self::SNAPSHOT_TABLE . "` WHERE `id` IN ($marks)");
+                    $delete->execute(array_map('intval', $ids));
+                    $result['trimmed'] += $delete->rowCount();
+                }
+                if(count($ids) < $batchSize) {
+                    $trimComplete = true;
+                    break;
+                }
+            }
+
+            $result['complete'] = $eventsComplete && $snapshotsComplete && $trimComplete;
         } catch(\Throwable $e) {
             $this->wire('log')->save('native-analytics-behavior', 'Purge failed: ' . $e->getMessage());
         }
 
         $result['seconds'] = round(microtime(true) - $started, 2);
         $this->wire('log')->save('native-analytics-behavior', 'Purge: ' . $result['events'] . ' events, '
-            . $result['snapshots'] . ' snapshot versions deleted in ' . $result['seconds'] . 's'
+            . $result['snapshots'] . ' expired snapshot versions, ' . $result['trimmed'] . ' excess snapshot versions deleted in ' . $result['seconds'] . 's'
             . ($result['complete'] ? '' : ' (stopped at time limit, more remain)'));
         return $result;
     }
@@ -796,7 +870,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     /**
      * Rows purgeExpired() would delete right now, for dry runs and monitoring.
      *
-     * @return array events, snapshots.
+     * @return array events, snapshots (expired), trimmed (excess versions per bucket).
      */
     public function countExpired() {
         $cutoff = $this->retentionCutoff();
@@ -808,7 +882,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
                 ON k.`path_hash` = s.`path_hash` AND k.`device` = s.`device`
             WHERE s.`captured_at` < :cutoff AND s.`id` <> k.keep_id");
         $snapshots->execute([':cutoff' => $cutoff]);
-        return ['events' => (int) $events->fetchColumn(), 'snapshots' => (int) $snapshots->fetchColumn()];
+        $keep = max(1, (int) $this->snapshotKeepVersions);
+        $excess = $db->prepare("SELECT COUNT(*) FROM (SELECT ROW_NUMBER() OVER (PARTITION BY `path_hash`, `device` ORDER BY `captured_at` DESC, `id` DESC) AS rn
+            FROM `" . self::SNAPSHOT_TABLE . "`) r WHERE r.rn > :keep");
+        $excess->bindValue(':keep', $keep, \PDO::PARAM_INT);
+        $excess->execute();
+        return ['events' => (int) $events->fetchColumn(), 'snapshots' => (int) $snapshots->fetchColumn(), 'trimmed' => (int) $excess->fetchColumn()];
     }
 
     protected function retentionCutoff() {
@@ -1907,6 +1986,22 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $f->label = 'Run the retention purge from LazyCron';
         $f->description = 'LazyCron runs the purge inside whichever visitor request crosses the day boundary, holding that visitor\'s PHP worker and session lock until it finishes. Uncheck this if a system cron job calls $modules->get(\'NativeAnalyticsBehavior\')->purgeExpired() instead.';
         $f->attr('checked', !empty($data['useLazyCron']));
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = 'snapshotMinHours';
+        $f->label = 'Minimum hours between new snapshot versions of a page';
+        $f->description = 'A page/device bucket stores at most one new snapshot version in this window, unless the upload matches a version it already holds. The heatmap backdrop needs a representative page, not every visitor\'s variant. 0 removes the cap.';
+        $f->min = 0; $f->max = 8760;
+        $f->value = (int) $data['snapshotMinHours'];
+        $wrap->add($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = 'snapshotKeepVersions';
+        $f->label = 'Snapshot versions kept per page';
+        $f->description = 'The purge trims each page/device bucket to its newest N versions. A session resolves to the version live at its time, or the earliest later one, so a few per bucket cover the whole event window.';
+        $f->min = 1; $f->max = 100;
+        $f->value = (int) $data['snapshotKeepVersions'];
         $wrap->add($f);
 
         $f = $modules->get('InputfieldTextarea');
