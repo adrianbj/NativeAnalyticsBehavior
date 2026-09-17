@@ -7,6 +7,8 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     const SNAPSHOT_TABLE = 'nab_snapshots';
     const SNAPSHOT_ROUTE = '/nab-snapshot';
     const SNAPSHOT_MAX_BYTES = 4194304; // 4 MB raw upload cap (DOM + inlined CSS)
+    // Bump whenever ensureSchema() gains a new table, column, index, or backfill.
+    const SCHEMA_VERSION = 1;
 
     protected $defaults = [
         'enabled' => 1,
@@ -18,13 +20,15 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         'excludedRoles' => '',    // newline-separated role names (superuser always excluded)
         'blockedIps' => '',       // newline-separated IPs
         'excludeNaBots' => 1,     // hide sessions NativeAnalytics flagged as bots
+        'useLazyCron' => 1,       // run the retention purge from LazyCron (else from cron via purgeExpired())
+        'schemaVersion' => 0,     // SCHEMA_VERSION that last completed ensureSchema()
     ];
 
     public static function getModuleInfo() {
         return [
             'title' => 'NativeAnalyticsBehavior',
             'summary' => 'Behavioral analytics companion for NativeAnalytics: heatmaps, insights and session recordings.',
-            'version' => '0.1.0',
+            'version' => '0.2.0',
             'author' => 'Adrian Jones',
             'icon' => 'fire',
             'autoload' => true,
@@ -39,7 +43,12 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->maybeHandleCollect();
         $this->maybeHandleSnapshot();
 
-        $this->addHookAfter('LazyCron::everyDay', $this, 'handleDailyCron');
+        // LazyCron piggybacks on a visitor's request and holds their PHP worker and
+        // session lock for the whole purge. Sites with a real crontab turn this off
+        // and call purgeExpired() from a CLI script instead.
+        if(!empty($this->useLazyCron)) {
+            $this->addHookAfter('LazyCron::everyDay', $this, 'handleDailyCron');
+        }
 
         // Inject a "Behavior" tab into the main NativeAnalytics dashboard. The
         // hooks are lazy (only fire when the dashboard renders its tabs), so
@@ -164,6 +173,16 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
     protected function ensureSchema($force = false) {
         static $done = false;
         if($done && !$force) return;
+
+        // Autoloaded, so init() runs this on every request. The sweep below is a
+        // CREATE TABLE, several SHOW queries, and an unindexed scan of the snapshot
+        // table, so it is skipped once the current SCHEMA_VERSION has completed.
+        // Install and upgrade force it; bumping SCHEMA_VERSION reruns it once.
+        if(!$force && (int) $this->get('schemaVersion') === self::SCHEMA_VERSION) {
+            $done = true;
+            return;
+        }
+
         $db = $this->wire('database');
         $db->exec("CREATE TABLE IF NOT EXISTS `" . self::EVENTS_TABLE . "` (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -255,6 +274,11 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         }
         $this->migrateSnapshotVersioning($db);
         $done = true;
+
+        // The string form of saveConfig() merges one key into the stored config.
+        // The array form replaces the whole config and would wipe every setting.
+        $this->set('schemaVersion', self::SCHEMA_VERSION);
+        $this->wire('modules')->saveConfig($this, 'schemaVersion', self::SCHEMA_VERSION);
     }
 
     /**
@@ -697,18 +721,101 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $this->sendJson(200, ['ok' => true]);
     }
 
-    public function handleDailyCron(HookEvent $event) {
-        $days = max(1, (int) $this->retentionDays);
-        $cutoff = date('Y-m-d H:i:s', strtotime('-' . $days . ' days'));
+    public function handleDailyCron(?HookEvent $event = null) {
+        $this->purgeExpired();
+    }
+
+    /**
+     * Delete events and snapshot versions older than the retention window, in
+     * batches so no single statement locks a large blob table for long. The newest
+     * snapshot version of every bucket is always kept: a page that has not changed
+     * in the whole window would otherwise lose its only heatmap backdrop.
+     *
+     * Callable from LazyCron (see handleDailyCron) or from a CLI cron script.
+     *
+     * @param int $batchSize Rows per DELETE statement.
+     * @param int $maxSeconds Stop after this many seconds (0 = no limit); the next
+     *   run picks up where this one left off.
+     * @return array events, snapshots (rows deleted), complete (bool), seconds (float).
+     */
+    public function purgeExpired($batchSize = 2000, $maxSeconds = 0) {
+        $batchSize = max(1, (int) $batchSize);
+        $maxSeconds = max(0, (int) $maxSeconds);
+        $cutoff = $this->retentionCutoff();
+        $started = microtime(true);
+        $result = ['events' => 0, 'snapshots' => 0, 'complete' => false, 'seconds' => 0.0];
+        $outOfTime = function() use ($started, $maxSeconds) {
+            return $maxSeconds > 0 && (microtime(true) - $started) >= $maxSeconds;
+        };
+
         try {
             $db = $this->wire('database');
-            $stmt = $db->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff");
-            $stmt->execute([':cutoff' => $cutoff]);
-            $stmt2 = $db->prepare("DELETE FROM `" . self::SNAPSHOT_TABLE . "` WHERE `captured_at` < :cutoff");
-            $stmt2->execute([':cutoff' => $cutoff]);
+
+            $events = $db->prepare("DELETE FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff LIMIT " . $batchSize);
+            do {
+                $events->execute([':cutoff' => $cutoff]);
+                $deleted = $events->rowCount();
+                $result['events'] += $deleted;
+            } while($deleted === $batchSize && !$outOfTime());
+            $eventsComplete = $deleted < $batchSize;
+
+            // Two statements rather than a multi-table DELETE, which cannot take a LIMIT.
+            $expired = $db->prepare("SELECT s.`id` FROM `" . self::SNAPSHOT_TABLE . "` s
+                JOIN (SELECT `path_hash`, `device`, MAX(`id`) AS keep_id FROM `" . self::SNAPSHOT_TABLE . "` GROUP BY `path_hash`, `device`) k
+                    ON k.`path_hash` = s.`path_hash` AND k.`device` = s.`device`
+                WHERE s.`captured_at` < :cutoff AND s.`id` <> k.keep_id
+                ORDER BY s.`id` LIMIT " . $batchSize);
+            $snapshotsComplete = false;
+            while(!$outOfTime()) {
+                $expired->execute([':cutoff' => $cutoff]);
+                $ids = $expired->fetchAll(\PDO::FETCH_COLUMN);
+                if($ids) {
+                    $marks = implode(',', array_fill(0, count($ids), '?'));
+                    $delete = $db->prepare("DELETE FROM `" . self::SNAPSHOT_TABLE . "` WHERE `id` IN ($marks)");
+                    $delete->execute(array_map('intval', $ids));
+                    $result['snapshots'] += $delete->rowCount();
+                }
+                if(count($ids) < $batchSize) {
+                    $snapshotsComplete = true;
+                    break;
+                }
+            }
+
+            $result['complete'] = $eventsComplete && $snapshotsComplete;
         } catch(\Throwable $e) {
             $this->wire('log')->save('native-analytics-behavior', 'Purge failed: ' . $e->getMessage());
         }
+
+        $result['seconds'] = round(microtime(true) - $started, 2);
+        $this->wire('log')->save('native-analytics-behavior', 'Purge: ' . $result['events'] . ' events, '
+            . $result['snapshots'] . ' snapshot versions deleted in ' . $result['seconds'] . 's'
+            . ($result['complete'] ? '' : ' (stopped at time limit, more remain)'));
+        return $result;
+    }
+
+    /**
+     * Rows purgeExpired() would delete right now, for dry runs and monitoring.
+     *
+     * @return array events, snapshots.
+     */
+    public function countExpired() {
+        $cutoff = $this->retentionCutoff();
+        $db = $this->wire('database');
+        $events = $db->prepare("SELECT COUNT(*) FROM `" . self::EVENTS_TABLE . "` WHERE `created_at` < :cutoff");
+        $events->execute([':cutoff' => $cutoff]);
+        $snapshots = $db->prepare("SELECT COUNT(*) FROM `" . self::SNAPSHOT_TABLE . "` s
+            JOIN (SELECT `path_hash`, `device`, MAX(`id`) AS keep_id FROM `" . self::SNAPSHOT_TABLE . "` GROUP BY `path_hash`, `device`) k
+                ON k.`path_hash` = s.`path_hash` AND k.`device` = s.`device`
+            WHERE s.`captured_at` < :cutoff AND s.`id` <> k.keep_id");
+        $snapshots->execute([':cutoff' => $cutoff]);
+        return ['events' => (int) $events->fetchColumn(), 'snapshots' => (int) $snapshots->fetchColumn()];
+    }
+
+    protected function retentionCutoff() {
+        // Public callers may reach this before init() has applied defaults.
+        $this->applyDefaults();
+        $days = max(1, (int) $this->retentionDays);
+        return date('Y-m-d H:i:s', strtotime('-' . $days . ' days'));
     }
 
     /**
@@ -1795,6 +1902,13 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $f->value = (int) $data['retentionDays'];
         $wrap->add($f);
 
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = 'useLazyCron';
+        $f->label = 'Run the retention purge from LazyCron';
+        $f->description = 'LazyCron runs the purge inside whichever visitor request crosses the day boundary, holding that visitor\'s PHP worker and session lock until it finishes. Uncheck this if a system cron job calls $modules->get(\'NativeAnalyticsBehavior\')->purgeExpired() instead.';
+        $f->attr('checked', !empty($data['useLazyCron']));
+        $wrap->add($f);
+
         $f = $modules->get('InputfieldTextarea');
         $f->name = 'excludedPaths';
         $f->label = 'Excluded path prefixes (one per line)';
@@ -1840,7 +1954,14 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return $wrap;
     }
 
-    public function ___install() {}
+    public function ___install() {
+        $this->ensureSchema(true);
+    }
+
+    public function ___upgrade($fromVersion, $toVersion) {
+        $this->ensureSchema(true);
+    }
+
     public function ___uninstall() {
         try {
             $this->wire('database')->exec("DROP TABLE IF EXISTS `" . self::EVENTS_TABLE . "`");

@@ -10,7 +10,7 @@ Behavioral analytics companion for the [NativeAnalytics](https://github.com/adri
 - **Versioned page snapshots** — the collector captures a masked DOM snapshot (via rrweb-snapshot) once per session per page. The server stores a new version only when the markup actually changes (content-hash dedup), and the trail viewer shows the version that was live during each session's visit.
 - **Bot exclusion** — sessions NativeAnalytics flagged as bots can be hidden.
 - **Configurable** sampling rate, retention window, and path/template/role/IP exclusions (superusers are always excluded).
-- **Daily retention purge** via LazyCron.
+- **Daily retention purge**, batched, via LazyCron or your own cron job (see Maintenance).
 
 ## Privacy
 The collector stores **no page text**: click targets are recorded as CSS selectors only, and visitor/session IDs are stored as salted SHA-256 hashes.
@@ -24,7 +24,20 @@ Use `NativeAnalyticsBehavior::eraseVisitor($rawId)` to satisfy data-subject eras
 2. Modules > Refresh.
 3. Install **NativeAnalyticsBehavior**, then **NativeAnalyticsBehavior Dashboard**.
 4. Configure under Modules > Configure > NativeAnalyticsBehavior.
-5. Ensure LazyCron is installed (it is a dependency) so retention purge runs.
+5. Ensure LazyCron is installed (it is a dependency) so retention purge runs, or set up a cron job instead (see Maintenance).
+
+## Maintenance
+The retention purge deletes events and snapshot versions older than the retention window, in batches. The newest snapshot version of every page/device bucket is always kept so a page that has not changed still has a heatmap backdrop.
+
+By default the purge runs from LazyCron, which means it runs inside whichever visitor request happens to cross the day boundary and holds that visitor's PHP worker and session lock until it finishes. On a busy site, uncheck **Run the retention purge from LazyCron** in the module config and call the purge from a real cron job instead, for example from a ProcessWire-bootstrapped CLI script:
+
+```php
+$result = $modules->get('NativeAnalyticsBehavior')->purgeExpired(2000, 600); // batch size, time limit in seconds
+```
+
+`purgeExpired()` returns the rows deleted per table and whether it finished; a run that hits the time limit resumes on the next call. `countExpired()` reports what a run would delete.
+
+The schema check in `init()` runs once per `SCHEMA_VERSION` and is then skipped, so a request does no schema queries in normal operation. Bump `SCHEMA_VERSION` when changing `ensureSchema()`.
 
 ## Requirements
 ProcessWire >= 3.0.173, PHP >= 7.4, NativeAnalytics, LazyCron.
