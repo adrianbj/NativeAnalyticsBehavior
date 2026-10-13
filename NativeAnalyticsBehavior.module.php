@@ -686,6 +686,15 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
 
         $raw = file_get_contents('php://input');
         if($raw === false || strlen($raw) > self::SNAPSHOT_MAX_BYTES) $this->sendJson(413, ['ok' => false]);
+
+        // The collector gzips the full upload where the browser can (CompressionStream).
+        // A gzip body starts with 1f 8b, which JSON never does; the decoded body keeps
+        // the same size cap.
+        if(strncmp($raw, "\x1f\x8b", 2) === 0) {
+            $raw = $this->gunzipCapped($raw, self::SNAPSHOT_MAX_BYTES);
+            if($raw === false) $this->sendJson(400, ['ok' => false]);
+        }
+
         $data = json_decode($raw, true);
         if(!is_array($data)) $this->sendJson(400, ['ok' => false]);
 
@@ -738,6 +747,26 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         $stmt->execute();
 
         $this->sendJson(200, ['ok' => true]);
+    }
+
+    /**
+     * Gunzip a request body, giving up once the output passes $max bytes.
+     *
+     * gzdecode() has no reliable output cap, so a small upload could inflate to
+     * hundreds of MB. Inflating 4 KB at a time bounds memory to about $max plus one
+     * chunk's expansion. Returns false for a corrupt, truncated, or oversized body.
+     */
+    protected function gunzipCapped($gz, $max) {
+        $ctx = @inflate_init(ZLIB_ENCODING_GZIP);
+        if($ctx === false) return false;
+        $out = '';
+        foreach(str_split($gz, 4096) as $chunk) {
+            $part = @inflate_add($ctx, $chunk, ZLIB_SYNC_FLUSH);
+            if($part === false) return false;
+            $out .= $part;
+            if(strlen($out) > $max) return false;
+        }
+        return inflate_get_status($ctx) === ZLIB_STREAM_END ? $out : false;
     }
 
     /**

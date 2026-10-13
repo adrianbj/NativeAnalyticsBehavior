@@ -575,6 +575,26 @@
     return fetch(cfg.snapshotEndpoint, { method: "POST", body: body, headers: { "Content-Type": "application/json" } });
   }
 
+  // Gzip the full snapshot before uploading it. The DOM JSON with inlined CSS
+  // shrinks about 8x, and its size is what made the upload slow on a phone, holding
+  // a server worker while it trickled in. Resolves null where the browser has no
+  // CompressionStream, and the caller sends it uncompressed; the server recognizes
+  // either form.
+  function gzipJson(json) {
+    if (typeof CompressionStream !== "function") return Promise.resolve(null);
+    try {
+      var stream = new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"));
+      return new Response(stream).arrayBuffer().catch(function () { return null; });
+    } catch (e) { return Promise.resolve(null); }
+  }
+
+  function postSnapshot(json) {
+    return gzipJson(json).then(function (gz) {
+      if (!gz) return postJson(json);
+      return fetch(cfg.snapshotEndpoint, { method: "POST", body: gz, headers: { "Content-Type": "application/gzip" } });
+    });
+  }
+
   // Ask before uploading: the server already holds this exact page for this bucket
   // far more often than not, and a snapshot with inlined CSS runs to hundreds of KB.
   // Only the hash travels unless the server says it wants the body.
@@ -592,7 +612,7 @@
       }).then(function (res) {
         if (!res || !res.wanted) return;
         meta.dom = node;
-        return postJson(JSON.stringify(meta));
+        return postSnapshot(JSON.stringify(meta));
       });
     }).catch(function () {});
   }
