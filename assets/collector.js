@@ -450,7 +450,7 @@
     if (pct > maxScrollPct) maxScrollPct = pct;
   }
 
-  function buildPayload(includeScroll) {
+  function buildPayload(includeScroll, leaving) {
     var events = queue.slice();
     queue = [];
     if (includeScroll) {
@@ -458,11 +458,16 @@
       // scroll event still saw the initial fold, so record that depth rather
       // than a misleading 0 (which would drop them out of the top band).
       trackScroll();
-      // Re-send the running max on every flush (not just at pagehide) so scroll
-      // depth survives a missed unload. The server keeps only the deepest value
-      // per session, so this can't inflate the pageview count. Skip when the
-      // depth hasn't grown since the last send to avoid redundant beacons.
-      if (maxScrollPct !== lastSentScrollPct) {
+      // Re-send the running max while the page is open (not just at pagehide) so
+      // scroll depth survives a missed unload. The server keeps only the deepest
+      // value per session, so this can't inflate the pageview count. While open,
+      // send only when the depth reaches a new 10% band, the reports' bucket size,
+      // so a slow reader doesn't send a beacon on every tick; leaving sends the
+      // exact depth whenever it has grown at all.
+      var grown = leaving
+        ? maxScrollPct !== lastSentScrollPct
+        : Math.floor(maxScrollPct / 10) !== Math.floor(lastSentScrollPct / 10);
+      if (grown) {
         lastSentScrollPct = maxScrollPct;
         events.push({
           type: "scroll",
@@ -478,8 +483,8 @@
     return JSON.stringify({ events: events });
   }
 
-  function flush(includeScroll) {
-    var body = buildPayload(includeScroll);
+  function flush(includeScroll, leaving) {
+    var body = buildPayload(includeScroll, leaving);
     if (!body) return;
     var sent = false;
     if (navigator.sendBeacon) {
@@ -674,10 +679,13 @@
   document.addEventListener("click", recordClick, true);
   document.addEventListener("copy", recordCopy, true);
   window.addEventListener("scroll", trackScroll, { passive: true });
-  setInterval(function () { flush(true); }, 10000);
-  window.addEventListener("pagehide", function () { flush(true); });
+  // A flush with nothing new sends nothing, so an idle tab stays quiet; the
+  // timer only paces clicks and scroll bands while someone is reading. Leaving
+  // or hiding the page sends whatever is left.
+  setInterval(function () { flush(true, false); }, 30000);
+  window.addEventListener("pagehide", function () { flush(true, true); });
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "hidden") flush(true);
+    if (document.visibilityState === "hidden") flush(true, true);
   });
 
   if (document.readyState === "complete") maybeCaptureSnapshot();
