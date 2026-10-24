@@ -30,7 +30,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return [
             'title' => 'NativeAnalyticsBehavior',
             'summary' => 'Behavioral analytics companion for NativeAnalytics: heatmaps, insights and session recordings.',
-            'version' => '0.3.0',
+            'version' => '0.3.1',
             'author' => 'Adrian Jones',
             'icon' => 'fire',
             'autoload' => true,

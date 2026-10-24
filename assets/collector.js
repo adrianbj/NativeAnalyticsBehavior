@@ -37,6 +37,10 @@
   // without a UA blocklist; it won't catch every bot, but it keeps obvious
   // synthetic traffic out of the heatmaps.
   if (navigator.webdriver === true) return;
+  // Crawlers that run scripts announce themselves in the user agent. The server doesn't
+  // check user agents, so without this their clicks and scrolls would be stored. Same list
+  // as NativeAnalytics' tracker.js: only names no person's browser carries.
+  if (/bot\/|bot\.html|compatible;[^)]*bot|crawl|spider|slurp|headless|phantomjs|selenium|puppeteer|playwright|lighthouse|pagespeed|chrome-privacy-preserving-prefetch|google-|mediapartners|facebookexternalhit|gptbot|claudebot|perplexitybot|bytespider|amazonbot|applebot/i.test(navigator.userAgent || "")) return;
 
   // --- sampling ---
   var rate = typeof cfg.sampleRate === "number" ? cfg.sampleRate : 100;
@@ -505,10 +509,31 @@
     return name === "nonce" || name.indexOf("__") === 0 || name.indexOf("data-csrf-") === 0;
   }
 
-  // The stored form of a snapshot: scripts gone, volatile attributes gone, node ids
-  // renumbered depth-first so two captures of the same markup serialize identically
-  // even when a late-injected node shifted rrweb's own numbering. rootId (nested
-  // documents) is remapped to the new numbering so rebuild still resolves it.
+  // What a visitor's form fields hold: whatever they typed or the browser autofilled
+  // before the capture, and hidden per-visitor values (session ids). None of it belongs
+  // in a stored page, and it would make every capture of the page unique. A button-like
+  // input keeps its value, since that is the label the backdrop shows.
+  var LABEL_INPUTS = { submit: 1, button: 1, reset: 1, image: 1 };
+  function dropFieldValues(n) {
+    var tag = n.tagName, attrs = n.attributes;
+    if (!attrs || (tag !== "input" && tag !== "textarea" && tag !== "select" && tag !== "option")) return;
+    if (tag === "input" && LABEL_INPUTS[String(attrs.type || "").toLowerCase()]) return;
+    if (tag === "option") { delete attrs.selected; return; }
+    delete attrs.value;
+    delete attrs.checked;
+  }
+
+  // A <meta> carrying the session's CSRF token (<meta name="csrf-token" content="…">) is
+  // unique to every visitor and invisible, so it is left out of the stored page.
+  function isTokenMeta(c) {
+    return c && c.type === 2 && c.tagName === "meta" && c.attributes && /csrf/i.test(String(c.attributes.name || ""));
+  }
+
+  // The stored form of a snapshot: scripts, the CSRF token meta, form field values, and
+  // volatile attributes gone, node ids renumbered depth-first so two captures of the
+  // same markup serialize identically even when a late-injected node shifted rrweb's
+  // own numbering. rootId (nested documents) is remapped to the new numbering so
+  // rebuild still resolves it.
   function canonicalize(root) {
     var idMap = {};
     var nextId = 1;
@@ -518,10 +543,11 @@
       n.id = nextId++;
       if (n.attributes) {
         for (var k in n.attributes) if (isVolatileAttr(k)) delete n.attributes[k];
+        dropFieldValues(n);
       }
       if (n.childNodes && n.childNodes.length) {
         n.childNodes = n.childNodes.filter(function (c) {
-          return !(c && c.type === 2 && c.tagName === "script");
+          return !(c && c.type === 2 && c.tagName === "script") && !isTokenMeta(c);
         });
         for (var i = 0; i < n.childNodes.length; i++) walk(n.childNodes[i]);
       }
