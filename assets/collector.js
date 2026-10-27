@@ -688,6 +688,24 @@
     try { sessionStorage.setItem(snapshotGateKey(), "1"); } catch (e) {}
   }
 
+  // Pages that enforce Trusted Types (require-trusted-types-for 'script') refuse a plain string as a
+  // script URL, so the snapshot library's goes through a 'nab' policy that passes only that URL. Where
+  // Trusted Types isn't supported, or the page's trusted-types directive doesn't allow the name, it
+  // stays a string.
+  function trustedSnapshotLib() {
+    try {
+      if (window.trustedTypes) {
+        return window.trustedTypes.createPolicy("nab", {
+          createScriptURL: function (url) {
+            if (url !== cfg.snapshotLib) throw new TypeError("nab: unexpected script URL");
+            return url;
+          }
+        }).createScriptURL(cfg.snapshotLib);
+      }
+    } catch (e) {}
+    return cfg.snapshotLib;
+  }
+
   function maybeCaptureSnapshot() {
     if (!cfg.snapshotEndpoint) return;
     if (snapshotAlreadyCaptured()) return;
@@ -695,7 +713,7 @@
     if (window.rrwebSnapshot && window.rrwebSnapshot.snapshot) { doCapture(); return; }
     if (!cfg.snapshotLib) return;
     var s = document.createElement("script");
-    s.src = cfg.snapshotLib;
+    s.src = trustedSnapshotLib();
     var n = nabScriptEl && nabScriptEl.nonce;
     if (n) s.setAttribute("nonce", n);
     s.onload = doCapture;
