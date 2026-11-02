@@ -55,6 +55,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // autocomplete. Page permission (nativeanalyticsbehavior-view) gates access.
     public function ___executePathSearch() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $this->releaseSession();
         $term = $this->wire('sanitizer')->text($this->wire('input')->get('q'));
         $this->sendJsonResponse($this->core->searchTrackedPaths($term, 20));
     }
@@ -63,6 +64,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // "Sessions on this page" panel. Page permission gates access.
     public function ___executeSessionList() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $this->releaseSession();
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
         $path = $sanitizer->text($input->get('path'));
@@ -104,6 +106,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // JSON. ?session must be a 64-char hex hash (400 otherwise).
     public function ___executeSessionJourney() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $this->releaseSession();
         $session = (string) $this->wire('input')->get('session');
         if(!preg_match('/^[a-f0-9]{64}$/', $session)) {
             http_response_code(400);
@@ -172,6 +175,7 @@ class ProcessNativeAnalyticsBehavior extends Process {
     // that moment; omitted, the latest version is returned (D2 versioned snapshots).
     public function ___executeSnapshot() {
         if(!$this->core) $this->core = $this->wire('modules')->get('NativeAnalyticsBehavior');
+        $this->releaseSession();
         $input = $this->wire('input');
         $sanitizer = $this->wire('sanitizer');
         $path = $sanitizer->text($input->get('path'));
@@ -186,6 +190,13 @@ class ProcessNativeAnalyticsBehavior extends Process {
             'capture_width' => (int) $snap['capture_width'],
             'captured_at' => (string) $snap['captured_at'],
         ]);
+    }
+
+    // The AJAX handlers only read the session, so they release its lock before
+    // querying: PHP holds it for the whole request, and a slow query held up
+    // every other admin request from the same browser until it finished.
+    protected function releaseSession() {
+        if(function_exists('session_write_close')) @session_write_close();
     }
 
     protected function sendJsonResponse($data) {

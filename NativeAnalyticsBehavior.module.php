@@ -30,7 +30,7 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
         return [
             'title' => 'NativeAnalyticsBehavior',
             'summary' => 'Behavioral analytics companion for NativeAnalytics: heatmaps, insights and session recordings.',
-            'version' => '0.3.2',
+            'version' => '0.3.3',
             'author' => 'Adrian Jones',
             'icon' => 'fire',
             'autoload' => true,
@@ -1444,125 +1444,60 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      * nab_events (NOT pwna_hits): nab_events keys on the full path including URL
      * segments, so landing pages like /products/sale are distinguishable,
      * whereas pwna_hits collapses them to the canonical page (/products/) and so
-     * can't isolate a single segment variant. The outer aggregate still reports each
-     * qualifying session's FULL stats (start time, distinct page count, device)
-     * from pwna_hits across all its hits, joined on the shared session_hash, so
-     * the list row reflects the whole visit even if it began before $from.
-     * Interaction counts and frustration flags are left-joined from nab_events via
-     * the collation-coerced na_session_hash; sessions with no captured clicks/copies
-     * still appear with a zero count. Only sessions recorded since na_session_hash
-     * shipped qualify (older interactions carry an empty hash).
+     * can't isolate a single segment variant. Each qualifying session reports its
+     * FULL stats (start time, distinct page count, device) from pwna_hits across
+     * all its hits, so the list row reflects the whole visit even if it began
+     * before $from. Interaction counts and frustration flags come from all of the
+     * session's nab_events; sessions with no captured clicks/copies still appear
+     * with a zero count. Only sessions recorded since na_session_hash shipped
+     * qualify (older interactions carry an empty hash). See sessionAggregates()
+     * for how the rows are gathered.
      *
      * $filters (['min_seconds' => int, 'interacted' => bool,
      * 'min_scroll' => int, 'multi_page' => bool]; 0/false disables a criterion)
-     * AND together as HAVING clauses over the per-session aggregates.
+     * AND together over the per-session aggregates.
      *
      * @return array<int,array{session_hash:string,started_at:string,last_at:string,duration:int,device:string,page_count:int,click_count:int,copy_count:int,max_scroll:int,has_dead:int,has_rage:int,referrer_host:string,utm_source:string,utm_medium:string,utm_campaign:string}>
      */
     public function getSessionsForPath($path, $from, $to, $limit = 50, $filters = [], $device = '') {
         if(!$this->hasHitsTable()) return [];
-        $db = $this->wire('database');
         $limit = max(1, min(200, (int) $limit));
-        $collate = $this->naHashCollation();
-        $allPages = ((string) $path === '');
-        $params = [
-            ':from' => (string) $from,
-            ':to' => (string) $to,
-        ];
-        if(!$allPages) $params[':ph'] = md5('/' . ltrim((string) $path, '/'));
-        $deviceSql = '';
-        if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
-            $deviceSql = " AND `device`=:dev";
-            $params[':dev'] = $device;
+        $sessions = $this->sessionAggregates($path, $from, $to, (array) $filters, $device);
+        uasort($sessions, fn($a, $b) => strcmp($b['last_at'], $a['last_at']));
+        $sessions = array_slice($sessions, 0, $limit, true);
+
+        // Referrer and UTM come from each session's entry (earliest) hit,
+        // fetched only for the rows shown.
+        $entries = [];
+        $firstIds = array_column($sessions, 'first_id');
+        if($firstIds) {
+            $stmt = $this->wire('database')->prepare("SELECT `id`, `referrer_host`, `utm_source`, `utm_medium`, `utm_campaign`
+                FROM `pwna_hits` WHERE `id` IN (" . implode(',', array_fill(0, count($firstIds), '?')) . ")");
+            $stmt->execute(array_values($firstIds));
+            foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) $entries[(int) $r['id']] = $r;
         }
-        $having = [];
-        if(!empty($filters['min_seconds'])) {
-            $having[] = "duration >= :minsec";
-            $params[':minsec'] = (int) $filters['min_seconds'];
-        }
-        if(!empty($filters['interacted'])) {
-            $having[] = "(click_count + copy_count) > 0";
-        }
-        if(!empty($filters['min_scroll'])) {
-            $having[] = "max_scroll >= :minscroll";
-            $params[':minscroll'] = (int) $filters['min_scroll'];
-        }
-        if(!empty($filters['multi_page'])) {
-            $having[] = "page_count > 1";
-        }
-        $havingSql = $having ? "
-                HAVING " . implode(' AND ', $having) : '';
-        $sql = "SELECT h.`session_hash` AS session_hash,
-                       MIN(h.`created_at`) AS started_at,
-                       MAX(h.`created_at`) AS last_at,
-                       SUM(h.`time_on_page`) AS duration,
-                       MAX(h.`device_type`) AS device,
-                       COUNT(DISTINCT h.`path_hash`) AS page_count,
-                       COALESCE(e.`clicks`, 0) AS click_count,
-                       COALESCE(e.`copies`, 0) AS copy_count,
-                       COALESCE(e.`ms`, 0) AS max_scroll,
-                       COALESCE(e.`has_dead`, 0) AS has_dead,
-                       COALESCE(e.`has_rage`, 0) AS has_rage,
-                       entry.`referrer_host` AS referrer_host,
-                       entry.`utm_source` AS utm_source,
-                       entry.`utm_medium` AS utm_medium,
-                       entry.`utm_campaign` AS utm_campaign
-                FROM `pwna_hits` h
-                LEFT JOIN (
-                    SELECT `na_session_hash`,
-                           SUM(`type`='click') AS clicks,
-                           SUM(`type`='copy') AS copies,
-                           MAX(`dead`) AS has_dead,
-                           MAX(`rage`) AS has_rage,
-                           MAX(`scroll_pct`) AS ms
-                    FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `na_session_hash` <> ''
-                    GROUP BY `na_session_hash`
-                ) e ON e.`na_session_hash`$collate = h.`session_hash`
-                LEFT JOIN (
-                    SELECT eh.`session_hash` AS sh,
-                           eh.`referrer_host` AS referrer_host,
-                           eh.`utm_source` AS utm_source,
-                           eh.`utm_medium` AS utm_medium,
-                           eh.`utm_campaign` AS utm_campaign
-                    FROM `pwna_hits` eh
-                    INNER JOIN (
-                        SELECT `session_hash`, MIN(`id`) AS first_id
-                        FROM `pwna_hits`
-                        WHERE `session_hash` <> ''
-                        GROUP BY `session_hash`
-                    ) fh ON fh.`first_id` = eh.`id`
-                ) entry ON entry.`sh` = h.`session_hash`
-                WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
-                    SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
-                    WHERE " . ($allPages ? "" : "`path_hash`=:ph AND ") . "`created_date` BETWEEN :from AND :to
-                      AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
-                )
-                GROUP BY h.`session_hash`" . $havingSql . "
-                ORDER BY last_at DESC
-                LIMIT " . $limit;
-        $stmt = $db->prepare($sql);
-        $stmt->execute($params);
+
         $out = [];
-        foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
-            $dev = (string) $r['device'];
+        foreach($sessions as $hash => $s) {
+            $entry = $entries[$s['first_id']] ?? [];
+            $dev = $s['device'];
             if(!in_array($dev, ['desktop', 'tablet', 'mobile'], true)) $dev = 'desktop';
             $out[] = [
-                'session_hash' => (string) $r['session_hash'],
-                'started_at' => (string) $r['started_at'],
-                'last_at' => (string) $r['last_at'],
-                'duration' => (int) $r['duration'],
+                'session_hash' => (string) $hash,
+                'started_at' => $s['started_at'],
+                'last_at' => $s['last_at'],
+                'duration' => $s['duration'],
                 'device' => $dev,
-                'page_count' => (int) $r['page_count'],
-                'click_count' => (int) $r['click_count'],
-                'copy_count' => (int) $r['copy_count'],
-                'max_scroll' => (int) $r['max_scroll'],
-                'has_dead' => ((int) $r['has_dead']) ? 1 : 0,
-                'has_rage' => ((int) $r['has_rage']) ? 1 : 0,
-                'referrer_host' => trim((string) $r['referrer_host']),
-                'utm_source' => trim((string) $r['utm_source']),
-                'utm_medium' => trim((string) $r['utm_medium']),
-                'utm_campaign' => trim((string) $r['utm_campaign']),
+                'page_count' => $s['page_count'],
+                'click_count' => $s['clicks'],
+                'copy_count' => $s['copies'],
+                'max_scroll' => $s['max_scroll'],
+                'has_dead' => $s['has_dead'] ? 1 : 0,
+                'has_rage' => $s['has_rage'] ? 1 : 0,
+                'referrer_host' => trim((string) ($entry['referrer_host'] ?? '')),
+                'utm_source' => trim((string) ($entry['utm_source'] ?? '')),
+                'utm_medium' => trim((string) ($entry['utm_medium'] ?? '')),
+                'utm_campaign' => trim((string) ($entry['utm_campaign'] ?? '')),
             ];
         }
         return $out;
@@ -1588,116 +1523,43 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
      *   'interacted' filter) on THIS page in range, one value per filtered
      *   session (sessions with no interaction count as 0, since zero is
      *   meaningful). Device-independent, like scroll_median.
-     * All zeros when the hits table is absent or nothing matches. The page
-     * params appear twice under different names (:ph/:ph2 etc.) because PDO
-     * allows each named param only once per statement.
+     * All zeros when the hits table is absent or nothing matches.
      */
     public function getSessionStatsForPath($path, $from, $to, $filters = [], $device = '') {
         $empty = ['total' => 0, 'median_duration' => 0, 'median_pages' => 0, 'scroll_median' => 0, 'median_clicks' => 0];
         if(!$this->hasHitsTable()) return $empty;
-        $db = $this->wire('database');
-        $collate = $this->naHashCollation();
-        $allPages = ((string) $path === '');
-        $params = [
-            ':from' => (string) $from,
-            ':to' => (string) $to,
-        ];
-        $params[':from2'] = $params[':from'];
-        $params[':to2'] = $params[':to'];
-        $params[':from3'] = $params[':from'];
-        $params[':to3'] = $params[':to'];
-        if(!$allPages) {
+        $sessions = $this->sessionAggregates($path, $from, $to, (array) $filters, $device);
+        if(!$sessions) return $empty;
+
+        // This page's deepest scroll and its click + copy count per session, in
+        // range (every page for the all-pages overview), joined to the
+        // qualifying sessions below.
+        $params = [':from' => (string) $from, ':to' => (string) $to];
+        $pathSql = '';
+        if((string) $path !== '') {
+            $pathSql = " AND `path_hash`=:ph";
             $params[':ph'] = md5('/' . ltrim((string) $path, '/'));
-            $params[':ph2'] = $params[':ph'];
-            $params[':ph3'] = $params[':ph'];
         }
-        $deviceSql = '';
-        if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
-            $deviceSql = " AND `device`=:dev";
-            $params[':dev'] = $device;
-        }
-        $having = [];
-        if(!empty($filters['min_seconds'])) {
-            $having[] = "duration >= :minsec";
-            $params[':minsec'] = (int) $filters['min_seconds'];
-        }
-        if(!empty($filters['interacted'])) {
-            $having[] = "interactions > 0";
-        }
-        if(!empty($filters['min_scroll'])) {
-            $having[] = "session_scroll >= :minscroll";
-            $params[':minscroll'] = (int) $filters['min_scroll'];
-        }
-        if(!empty($filters['multi_page'])) {
-            $having[] = "page_count > 1";
-        }
-        $havingSql = $having ? "
-                    HAVING " . implode(' AND ', $having) : '';
-        // The session-wide events rollup is the heaviest scan here (a full
-        // GROUP BY over nab_events) and only feeds the interacted/min_scroll
-        // criteria, so it is joined only when one of them is active. Its inner
-        // aliases (ic/ms) deliberately differ from the outer COALESCE aliases:
-        // MySQL resolves HAVING names against FROM columns before select
-        // aliases, and matching names would bind HAVING to the nullable
-        // pre-COALESCE columns.
-        $needsEvents = !empty($filters['interacted']) || !empty($filters['min_scroll']);
-        $eventCols = $needsEvents ? "
-                       COALESCE(e.`ic`, 0) AS interactions,
-                       COALESCE(e.`ms`, 0) AS session_scroll," : "";
-        $eventJoin = $needsEvents ? "
-                LEFT JOIN (
-                    SELECT `na_session_hash`,
-                           SUM(`type` IN ('click','copy')) AS ic,
-                           MAX(`scroll_pct`) AS ms
-                    FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `na_session_hash` <> ''
-                    GROUP BY `na_session_hash`
-                ) e ON e.`na_session_hash`$collate = h.`session_hash`" : "";
-        // Per-session rows rather than SQL aggregates: MySQL has no portable
-        // MEDIAN(), so the duration median is computed in PHP below.
-        $sql = "SELECT t.`duration`, t.`page_scroll`, t.`page_count`, t.`page_clicks` FROM (
-                SELECT h.`session_hash` AS sh,
-                       SUM(h.`time_on_page`) AS duration,$eventCols
-                       COUNT(DISTINCT h.`path_hash`) AS page_count,
-                       MAX(ps.`page_scroll`) AS page_scroll,
-                       COALESCE(MAX(pc.`page_clicks`), 0) AS page_clicks
-                FROM `pwna_hits` h" . $eventJoin . "
-                LEFT JOIN (
-                    SELECT `na_session_hash`, MAX(`scroll_pct`) AS page_scroll
-                    FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `type`='scroll'" . ($allPages ? "" : " AND `path_hash`=:ph2") . "
-                      AND `created_date` BETWEEN :from2 AND :to2
-                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
-                    GROUP BY `na_session_hash`
-                ) ps ON ps.`na_session_hash`$collate = h.`session_hash`
-                LEFT JOIN (
-                    SELECT `na_session_hash`, COUNT(*) AS page_clicks
-                    FROM `" . self::EVENTS_TABLE . "`
-                    WHERE `type` IN ('click','copy')" . ($allPages ? "" : " AND `path_hash`=:ph3") . "
-                      AND `created_date` BETWEEN :from3 AND :to3
-                      AND `na_session_hash` <> ''" . $this->botExclusionSql() . "
-                    GROUP BY `na_session_hash`
-                ) pc ON pc.`na_session_hash`$collate = h.`session_hash`
-                WHERE h.`session_hash` <> '' AND h.`session_hash` IN (
-                    SELECT `na_session_hash`$collate FROM `" . self::EVENTS_TABLE . "`
-                    WHERE " . ($allPages ? "" : "`path_hash`=:ph AND ") . "`created_date` BETWEEN :from AND :to
-                      AND `na_session_hash` <> ''" . $deviceSql . $this->botExclusionSql() . "
-                )
-                GROUP BY h.`session_hash`" . $havingSql . "
-            ) t";
-        $stmt = $db->prepare($sql);
+        $range = "`created_date` BETWEEN :from AND :to AND `na_session_hash` <> ''" . $pathSql;
+        $db = $this->wire('database');
+        $stmt = $db->prepare("SELECT `na_session_hash`, MAX(`scroll_pct`) FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type`='scroll' AND $range GROUP BY `na_session_hash`");
         $stmt->execute($params);
-        $rows = $stmt->fetchAll(\PDO::FETCH_NUM);
-        if(!$rows) return $empty;
+        $pageScroll = $stmt->fetchAll(\PDO::FETCH_KEY_PAIR);
+        $stmt = $db->prepare("SELECT `na_session_hash`, COUNT(*) FROM `" . self::EVENTS_TABLE . "`
+            WHERE `type` IN ('click','copy') AND $range GROUP BY `na_session_hash`");
+        $stmt->execute($params);
+        $pageClicks = $stmt->fetchAll(\PDO::FETCH_KEY_PAIR);
+
         $durations = [];
         $scrolls = [];
         $pages = [];
         $clicks = [];
-        foreach($rows as $r) {
-            $durations[] = (int) $r[0];
-            if($r[1] !== null) $scrolls[] = (int) $r[1];
-            $pages[] = (int) $r[2];
-            $clicks[] = (int) $r[3];
+        foreach($sessions as $hash => $s) {
+            $durations[] = $s['duration'];
+            if(isset($pageScroll[$hash]) && $pageScroll[$hash] !== null) $scrolls[] = (int) $pageScroll[$hash];
+            $pages[] = $s['page_count'];
+            $clicks[] = (int) ($pageClicks[$hash] ?? 0);
         }
         return [
             'total' => count($durations),
@@ -1706,6 +1568,90 @@ class NativeAnalyticsBehavior extends WireData implements Module, ConfigurableMo
             'scroll_median' => $this->medianInt($scrolls),
             'median_clicks' => $this->medianInt($clicks),
         ];
+    }
+
+    /**
+     * The sessions behind the sessions panel and its stats, keyed by session
+     * hash, after the engagement $filters: [started_at, last_at, duration,
+     * device, page_count, first_id (the entry hit's pwna_hits id), clicks,
+     * copies, has_dead, has_rage, max_scroll (the last five across ALL of the
+     * session's nab_events)].
+     *
+     * Built from separate indexed queries and joined here rather than in one
+     * statement. Joining pwna_hits to per-session rollups of both tables in SQL
+     * needs a COLLATE on the hash (the two modules' tables can differ), which
+     * rules out every index, and the rollups are derived tables with none of
+     * their own, so each hit row was compared against every row of both: 13 s
+     * for 30 days of all pages on a site with about 22,000 rows in each table,
+     * against well under a second this way. Sessions are fetched by hash in
+     * chunks, so the cost follows the sessions in range rather than all-time data.
+     *
+     * Bot sessions are dropped by the same rule as botExclusionSql(): a session
+     * NativeAnalytics flagged (is_bot) when the excludeNaBots toggle is on.
+     */
+    protected function sessionAggregates($path, $from, $to, array $filters, $device) {
+        $db = $this->wire('database');
+        $params = [':from' => (string) $from, ':to' => (string) $to];
+        $where = "`created_date` BETWEEN :from AND :to AND `na_session_hash` <> ''";
+        if((string) $path !== '') {
+            $where .= " AND `path_hash`=:ph";
+            $params[':ph'] = md5('/' . ltrim((string) $path, '/'));
+        }
+        if(in_array($device, ['desktop', 'tablet', 'mobile'], true)) {
+            $where .= " AND `device`=:dev";
+            $params[':dev'] = $device;
+        }
+        $stmt = $db->prepare("SELECT DISTINCT `na_session_hash` FROM `" . self::EVENTS_TABLE . "` WHERE $where");
+        $stmt->execute($params);
+        $hashes = $stmt->fetchAll(\PDO::FETCH_COLUMN);
+        if($hashes && !empty($this->excludeNaBots)) {
+            $bots = $db->query("SELECT DISTINCT `session_hash` FROM `pwna_hits` WHERE `is_bot`=1 AND `session_hash` <> ''")->fetchAll(\PDO::FETCH_COLUMN);
+            $hashes = array_values(array_diff($hashes, $bots));
+        }
+        if(!$hashes) return [];
+
+        $sessions = [];
+        $events = [];
+        foreach(array_chunk($hashes, 1000) as $chunk) {
+            $in = implode(',', array_fill(0, count($chunk), '?'));
+            $stmt = $db->prepare("SELECT `session_hash`, MIN(`created_at`) AS started_at, MAX(`created_at`) AS last_at,
+                    SUM(`time_on_page`) AS duration, MAX(`device_type`) AS device,
+                    COUNT(DISTINCT `path_hash`) AS page_count, MIN(`id`) AS first_id
+                FROM `pwna_hits` WHERE `session_hash` IN ($in) GROUP BY `session_hash`");
+            $stmt->execute($chunk);
+            foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) $sessions[(string) $r['session_hash']] = $r;
+            $stmt = $db->prepare("SELECT `na_session_hash`, SUM(`type`='click') AS clicks, SUM(`type`='copy') AS copies,
+                    MAX(`dead`) AS has_dead, MAX(`rage`) AS has_rage, MAX(`scroll_pct`) AS max_scroll
+                FROM `" . self::EVENTS_TABLE . "` WHERE `na_session_hash` IN ($in) GROUP BY `na_session_hash`");
+            $stmt->execute($chunk);
+            foreach($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) $events[(string) $r['na_session_hash']] = $r;
+        }
+
+        $minSeconds = (int) ($filters['min_seconds'] ?? 0);
+        $minScroll = (int) ($filters['min_scroll'] ?? 0);
+        $out = [];
+        foreach($sessions as $hash => $r) {
+            $e = $events[$hash] ?? [];
+            $s = [
+                'started_at' => (string) $r['started_at'],
+                'last_at' => (string) $r['last_at'],
+                'duration' => (int) $r['duration'],
+                'device' => (string) $r['device'],
+                'page_count' => (int) $r['page_count'],
+                'first_id' => (int) $r['first_id'],
+                'clicks' => (int) ($e['clicks'] ?? 0),
+                'copies' => (int) ($e['copies'] ?? 0),
+                'has_dead' => (int) ($e['has_dead'] ?? 0),
+                'has_rage' => (int) ($e['has_rage'] ?? 0),
+                'max_scroll' => (int) ($e['max_scroll'] ?? 0),
+            ];
+            if($minSeconds && $s['duration'] < $minSeconds) continue;
+            if(!empty($filters['interacted']) && $s['clicks'] + $s['copies'] === 0) continue;
+            if($minScroll && $s['max_scroll'] < $minScroll) continue;
+            if(!empty($filters['multi_page']) && $s['page_count'] <= 1) continue;
+            $out[$hash] = $s;
+        }
+        return $out;
     }
 
     /**
